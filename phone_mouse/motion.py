@@ -1,15 +1,16 @@
-"""Turn raw phone sensor samples into cursor deltas.
+"""Turn raw phone sensor samples into cursor motion.
 
-Sensor conventions follow the W3C DeviceMotionEvent spec, which is what
-iOS Safari reports:
+Device frame (W3C DeviceMotionEvent, also used by iOS): +x to the right of
+the screen, +y towards the top edge, +z out of the screen towards the user.
+``acceleration`` is linear acceleration in m/s^2 with gravity removed and
+``accelerationIncludingGravity`` at rest points *up* (flat, screen up, it
+reads about (0, 0, +9.81)). Rotation rates are deg/s, right-hand rule.
 
-* Device frame: +x to the right of the screen, +y towards the top edge,
-  +z out of the screen towards the user.
-* ``rotationRate`` is in deg/s: ``alpha`` about z, ``beta`` about x,
-  ``gamma`` about y (right-hand rule).
-* ``acceleration`` is linear acceleration in m/s^2 with gravity removed.
-* ``accelerationIncludingGravity`` at rest points *up* (flat on a table,
-  screen up, it reads roughly (0, 0, +9.81)).
+Browsers disagree on how ``rotationRate.alpha/beta/gamma`` map to device
+axes. The spec says alpha=z, beta=x, gamma=y, which Chrome on Android
+follows, but WebKit (every browser on iOS) reports alpha=x, beta=y,
+gamma=z. :class:`AxisDetector` works out which one a phone is using from the
+data itself.
 
 Screen coordinates are +x right, +y down.
 """
@@ -22,6 +23,8 @@ from dataclasses import dataclass, field
 Vec3 = tuple[float, float, float]
 
 GRAVITY = 9.80665
+DEG = math.pi / 180.0
+AXIS_CONVENTIONS = ("w3c", "ios")
 
 
 def _norm(v: Vec3) -> float:
@@ -32,11 +35,56 @@ def _dot(a: Vec3, b: Vec3) -> float:
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
+def _cross(a: Vec3, b: Vec3) -> Vec3:
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def _sub(a: Vec3, b: Vec3) -> Vec3:
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _scale(a: Vec3, k: float) -> Vec3:
+    return (a[0] * k, a[1] * k, a[2] * k)
+
+
+def _unit(v: Vec3) -> Vec3:
+    n = _norm(v)
+    return (v[0] / n, v[1] / n, v[2] / n) if n > 0 else (0.0, 0.0, 1.0)
+
+
 def _deadzone(value: float, threshold: float) -> float:
     """Soft deadzone: zero inside the band, continuous outside it."""
     if abs(value) <= threshold:
         return 0.0
     return value - math.copysign(threshold, value)
+
+
+def device_rotation(rot: Vec3, convention: str) -> Vec3:
+    """Map browser (alpha, beta, gamma) rates to device-frame (x, y, z)."""
+    alpha, beta, gamma = rot
+    if convention == "ios":
+        return (alpha, beta, gamma)
+    return (beta, gamma, alpha)
+
+
+def up_vector(gravity: Vec3 | None, linear: Vec3 | None = None) -> Vec3 | None:
+    """Unit "up" vector in the device frame, or None if unusable.
+
+    Subtracting linear acceleration from ``accelerationIncludingGravity``
+    leaves the phone's own fused gravity estimate, which is far steadier
+    than the raw accelerometer while the hand is moving.
+    """
+    if gravity is None:
+        return None
+    g = _sub(gravity, linear) if linear is not None else gravity
+    n = _norm(g)
+    if n < 0.5 * GRAVITY:
+        return None
+    return _scale(g, 1.0 / n)
 
 
 @dataclass
@@ -71,54 +119,135 @@ def pointer_acceleration(speed: float, threshold: float, factor: float) -> float
 
 
 @dataclass
-class GyroPointer:
-    """Air mouse: aim the phone like a laser pointer.
+class AxisDetector:
+    """Decide which rotation-rate convention the browser uses.
 
-    Horizontal motion uses the yaw rate about the *world* vertical axis
-    (rotation rate projected onto gravity), so it works whether the phone is
-    held flat like a remote or upright like a camera. Vertical motion uses
-    pitch about the device x-axis (tilting the top edge up/down).
+    A world-fixed vector seen from a rotating phone changes as
+    ``d(up)/dt = -omega x up``. Whichever convention's omega better predicts
+    how the measured gravity direction actually turned is the right one.
     """
+
+    min_rate_dps: float = 25.0
+    min_samples: int = 15
+    confidence: float = 3.0
+    decay: float = 0.995
+    max_turn_rate: float = 10.0
+    error: dict[str, float] = field(default_factory=lambda: {c: 0.0 for c in AXIS_CONVENTIONS})
+    samples: int = 0
+    decided: str | None = None
+    _prev_up: Vec3 | None = None
+
+    def update(self, rot: Vec3, up: Vec3 | None, dt: float) -> None:
+        prev, self._prev_up = self._prev_up, up
+        if up is None or prev is None or dt <= 0:
+            return
+        if _norm(rot) < self.min_rate_dps:
+            return
+        measured = _scale(_sub(up, prev), 1.0 / dt)
+        if _norm(measured) > self.max_turn_rate:
+            return  # a dropped sample or glitch, not real rotation
+        mid = _unit(((up[0] + prev[0]) / 2, (up[1] + prev[1]) / 2, (up[2] + prev[2]) / 2))
+        for conv in AXIS_CONVENTIONS:
+            omega = _scale(device_rotation(rot, conv), DEG)
+            predicted = _scale(_cross(omega, mid), -1.0)
+            diff = _sub(measured, predicted)
+            self.error[conv] = self.decay * self.error[conv] + _dot(diff, diff)
+        self.samples += 1
+        if self.samples >= self.min_samples:
+            w3c, ios = self.error["w3c"], self.error["ios"]
+            if ios * self.confidence < w3c:
+                self.decided = "ios"
+            elif w3c * self.confidence < ios:
+                self.decided = "w3c"
+
+    @property
+    def best(self) -> str | None:
+        """The convention in use, once there is clear evidence for one."""
+        return self.decided
+
+
+@dataclass
+class PointingFrame:
+    """Which way the phone points, and how fast that direction is turning.
+
+    Held like a remote (closer to flat), the top edge (+y) points at the
+    screen; held upright like a camera, the back (-z) does. Rotation is
+    decomposed relative to that pointing direction so that rolling the phone
+    around it does not move the cursor, just like a laser pointer.
+    """
+
+    upright_enter_deg: float = 55.0
+    upright_exit_deg: float = 45.0
+    upright: bool = False
+
+    @property
+    def axis(self) -> Vec3:
+        return (0.0, 0.0, -1.0) if self.upright else (0.0, 1.0, 0.0)
+
+    def observe(self, up: Vec3) -> bool:
+        """Update the pointing axis from gravity. Returns True if it changed."""
+        top_elevation = math.degrees(math.asin(max(-1.0, min(1.0, abs(up[1])))))
+        was = self.upright
+        if not self.upright and top_elevation > self.upright_enter_deg:
+            self.upright = True
+        elif self.upright and top_elevation < self.upright_exit_deg:
+            self.upright = False
+        return was != self.upright
+
+    def elevation(self, up: Vec3) -> float:
+        """Angle of the pointing direction above the horizon, in degrees."""
+        return math.degrees(math.asin(max(-1.0, min(1.0, _dot(up, self.axis)))))
+
+    def rates(self, omega: Vec3, up: Vec3) -> tuple[float, float]:
+        """(left-turn rate, upward rate) of the pointing direction in deg/s.
+
+        Both are angular speeds across the field of view, so they map
+        directly to cursor speed.
+        """
+        p = self.axis
+        s = _dot(up, p)
+        c = math.sqrt(max(1.0 - s * s, 0.25))
+        turn_left = (_dot(omega, up) - _dot(omega, p) * s) / c
+        tilt_up = _dot(omega, _cross(p, up)) / c
+        return turn_left, tilt_up
+
+
+@dataclass
+class GyroPointer:
+    """Air mouse: cursor speed follows how fast you sweep the phone."""
 
     pixels_per_degree: float = 18.0
     deadzone_dps: float = 1.5
     accel_threshold_dps: float = 60.0
     accel_factor: float = 0.6
     smoothing: float = 0.35
+    frame: PointingFrame = field(default_factory=PointingFrame)
     _sx: float = 0.0
     _sy: float = 0.0
 
     def update(
         self,
-        rotation_rate: Vec3,
+        omega: Vec3,
         dt: float,
-        gravity: Vec3 | None = None,
+        up: Vec3 | None = None,
+        pointer_accel: bool = True,
     ) -> tuple[float, float]:
-        alpha, beta, gamma = rotation_rate
-        omega: Vec3 = (beta, gamma, alpha)
+        """``omega`` is the device-frame rotation rate (x, y, z) in deg/s."""
+        up = up or (0.0, 0.0, 1.0)
+        self.frame.observe(up)
+        turn_left, tilt_up = self.frame.rates(omega, up)
+        turn_left = _deadzone(turn_left, self.deadzone_dps)
+        tilt_up = _deadzone(tilt_up, self.deadzone_dps)
 
-        up: Vec3 = (0.0, 0.0, 1.0)
-        if gravity is not None:
-            g = _norm(gravity)
-            if g > 0.5 * GRAVITY:
-                up = (gravity[0] / g, gravity[1] / g, gravity[2] / g)
-
-        yaw_rate = _deadzone(_dot(omega, up), self.deadzone_dps)
-        pitch_rate = _deadzone(beta, self.deadzone_dps)
-
-        speed = math.hypot(yaw_rate, pitch_rate)
-        gain = self.pixels_per_degree * pointer_acceleration(
-            speed, self.accel_threshold_dps, self.accel_factor
-        )
-
-        # Positive yaw about "up" turns the top edge left; positive pitch
-        # lifts the top edge. Both should move the cursor left/up.
-        raw_dx = -yaw_rate * gain * dt
-        raw_dy = -pitch_rate * gain * dt
+        gain = self.pixels_per_degree
+        if pointer_accel:
+            gain *= pointer_acceleration(
+                math.hypot(turn_left, tilt_up), self.accel_threshold_dps, self.accel_factor
+            )
 
         a = self.smoothing
-        self._sx = a * self._sx + (1 - a) * raw_dx
-        self._sy = a * self._sy + (1 - a) * raw_dy
+        self._sx = a * self._sx + (1 - a) * (-turn_left * gain * dt)
+        self._sy = a * self._sy + (1 - a) * (-tilt_up * gain * dt)
         return self._sx, self._sy
 
     def reset(self) -> None:
@@ -126,69 +255,207 @@ class GyroPointer:
 
 
 @dataclass
-class SlidePointer:
-    """Desk mouse: slide the phone flat on a surface like a real mouse.
+class LaserPointer:
+    """Laser pointer: where the phone points is where the cursor goes.
 
-    Double-integrating a phone accelerometer drifts badly, so this uses
-    zero-velocity updates: when acceleration and rotation stay near zero for
-    a few samples the phone is assumed to be at rest and velocity is reset.
-    A slowly-adapting bias estimate removes sensor offset while at rest.
-    This is the experimental mode; the gyro mode is far more precise.
+    Tracks absolute aim angles. Elevation comes straight from gravity (no
+    drift); heading is integrated from the gyro and drifts slowly, which
+    re-aiming corrects. The cursor position is ``anchor + tan(angle)``
+    relative to the aim recorded when the anchor was set.
     """
 
-    pixels_per_meter: float = 9000.0
-    accel_deadzone: float = 0.12
-    still_accel: float = 0.18
-    still_gyro_dps: float = 6.0
-    still_samples: int = 6
-    velocity_damping: float = 0.92
-    bias_rate: float = 0.05
-    max_speed: float = 1.5
-    _vx: float = 0.0
-    _vy: float = 0.0
+    pixels_per_degree: float = 40.0
+    max_angle_deg: float = 70.0
+    invert_x: bool = False
+    invert_y: bool = False
+    frame: PointingFrame = field(default_factory=PointingFrame)
+    heading: float = 0.0
+    elevation: float = 0.0
+    anchor: tuple[float, float] | None = None
+    has_data: bool = False
+    _ref: tuple[float, float] = (0.0, 0.0)
+    _shown: tuple[float, float] = (0.0, 0.0)
+
+    def update(self, omega: Vec3, dt: float, up: Vec3 | None) -> None:
+        up = up or (0.0, 0.0, 1.0)
+        if self.frame.observe(up):
+            self.anchor = None
+        turn_left, _ = self.frame.rates(omega, up)
+        elevation = self.frame.elevation(up)
+        cos_el = max(math.cos(math.radians(elevation)), 0.5)
+        self.heading += turn_left / cos_el * dt
+        self.elevation = elevation
+        self.has_data = True
+
+    def aim(self, cursor: tuple[float, float]) -> None:
+        """Declare that the phone is currently pointing at ``cursor``."""
+        self.anchor = cursor
+        self._shown = cursor
+        self._ref = (self.heading, self.elevation)
+
+    def hold(self) -> None:
+        """Keep the cursor where it was last shown while the aim moves."""
+        if self.anchor is not None:
+            self.aim(self._shown)
+
+    def target(self) -> tuple[float, float]:
+        assert self.anchor is not None
+        k = self.pixels_per_degree / DEG
+        lim = self.max_angle_deg
+        d_heading = max(-lim, min(lim, self.heading - self._ref[0]))
+        d_elev = max(-lim, min(lim, self.elevation - self._ref[1]))
+        sx = 1 if self.invert_x else -1
+        sy = 1 if self.invert_y else -1
+        self._shown = (
+            self.anchor[0] + sx * k * math.tan(d_heading * DEG),
+            self.anchor[1] + sy * k * math.tan(d_elev * DEG),
+        )
+        return self._shown
+
+
+@dataclass
+class SlidePointer:
+    """Desk mouse: slide the phone flat on a surface.
+
+    A phone has no optical sensor, so position comes from integrating the
+    accelerometer twice, which drifts. Integration is limited to individual
+    strokes (start moving, push, stop) with these rules:
+
+    * Velocity is integrated without leakage, so cursor travel tracks the
+      distance moved rather than how hard the phone was pushed.
+    * A stroke is confirmed once acceleration clearly rises above noise; the
+      distance covered before that point is caught up immediately.
+    * A stroke ends when speed falls to a fraction of its peak, or as soon
+      as velocity would point backwards, so braking can't pull the cursor
+      back ("bounce back").
+    * For a short while after a stroke, motion in the opposite direction
+      only counts once it is clearly a deliberate push back.
+    * While the phone rests, velocity is zero and the sensor bias is
+      re-estimated.
+
+    Very slow, gentle slides produce acceleration below the sensor noise
+    and can't be told apart from resting; that is a hardware limit.
+    """
+
+    pixels_per_meter: float = 15000.0
+    start_accel: float = 0.3
+    still_accel: float = 0.12
+    still_gyro_dps: float = 10.0
+    still_time: float = 0.12
+    end_fraction: float = 0.15
+    reverse_fraction: float = 0.5
+    min_reverse_speed: float = 0.05
+    reverse_window: float = 0.5
+    max_stroke_time: float = 2.0
+    bias_rate: float = 0.03
+    max_speed: float = 2.0
+    moving: bool = False
+    _v: list[float] = field(default_factory=lambda: [0.0, 0.0])
     _bias: list[float] = field(default_factory=lambda: [0.0, 0.0])
-    _still: int = 0
+    _pending: list[float] = field(default_factory=lambda: [0.0, 0.0])
+    _peak: float = 0.0
+    _dir: tuple[float, float] = (0.0, 0.0)
+    _last_peak: float = 0.0
+    _since_stroke: float = math.inf
+    _still_t: float = 0.0
+    _stroke_t: float = 0.0
 
     @property
     def velocity(self) -> tuple[float, float]:
-        return self._vx, self._vy
+        return self._v[0], self._v[1]
+
+    def _end_stroke(self) -> None:
+        self.moving = False
+        self._last_peak = self._peak
+        self._since_stroke = 0.0
+        self._v = [0.0, 0.0]
+        self._pending = [0.0, 0.0]
 
     def update(
         self,
         acceleration: Vec3,
         dt: float,
-        rotation_rate: Vec3 | None = None,
+        omega: Vec3 | None = None,
     ) -> tuple[float, float]:
         ax = acceleration[0] - self._bias[0]
         ay = acceleration[1] - self._bias[1]
-        gyro = _norm(rotation_rate) if rotation_rate is not None else 0.0
+        a_mag = math.hypot(ax, ay)
+        gyro = _norm(omega) if omega is not None else 0.0
+        self._since_stroke += dt
 
-        if math.hypot(ax, ay) < self.still_accel and gyro < self.still_gyro_dps:
-            self._still += 1
+        if a_mag < self.still_accel and gyro < self.still_gyro_dps:
+            self._still_t += dt
         else:
-            self._still = 0
+            self._still_t = 0.0
 
-        if self._still >= self.still_samples:
-            self._vx = self._vy = 0.0
-            self._bias[0] += self.bias_rate * ax
-            self._bias[1] += self.bias_rate * ay
+        # Stopping takes visible deceleration, so "quiet" while still fast
+        # means gliding at constant speed: keep the stroke alive a bit longer.
+        coasting = (
+            self.moving
+            and math.hypot(*self._v) > 0.5 * self._peak
+            and self._still_t < 3 * self.still_time
+        )
+        if self._still_t >= self.still_time and not coasting:
+            if self.moving:
+                self._end_stroke()
+            elif self._since_stroke > self.reverse_window:
+                self._bias[0] += self.bias_rate * ax
+                self._bias[1] += self.bias_rate * ay
+            self._v = [0.0, 0.0]
+            self._pending = [0.0, 0.0]
             return 0.0, 0.0
 
-        self._vx = (self._vx + _deadzone(ax, self.accel_deadzone) * dt) * self.velocity_damping
-        self._vy = (self._vy + _deadzone(ay, self.accel_deadzone) * dt) * self.velocity_damping
+        self._v[0] += ax * dt
+        self._v[1] += ay * dt
+        vx, vy = self._v
+        speed = math.hypot(vx, vy)
 
-        speed = math.hypot(self._vx, self._vy)
+        if not self.moving:
+            self._pending[0] += vx * dt
+            self._pending[1] += vy * dt
+            recent = self._since_stroke < self.reverse_window
+            backwards = recent and vx * self._dir[0] + vy * self._dir[1] < 0
+            if backwards:
+                needed = max(self.reverse_fraction * self._last_peak, self.min_reverse_speed)
+                if speed < needed:
+                    return 0.0, 0.0
+                # The catch-up here would mostly be braking residue.
+                self._pending = [0.0, 0.0]
+            elif a_mag < self.start_accel or speed == 0:
+                return 0.0, 0.0
+            self.moving = True
+            self._peak = speed
+            self._dir = (vx / speed, vy / speed)
+            self._stroke_t = 0.0
+            px, py = self._pending
+            self._pending = [0.0, 0.0]
+            return px * self.pixels_per_meter, -py * self.pixels_per_meter
+
+        self._stroke_t += dt
+        if speed > self._peak:
+            self._peak = speed
+            self._dir = (vx / speed, vy / speed)
+        along = vx * self._dir[0] + vy * self._dir[1]
+        if (
+            along <= 0
+            or speed < self.end_fraction * self._peak
+            or self._stroke_t > self.max_stroke_time
+        ):
+            self._end_stroke()
+            return 0.0, 0.0
+
         if speed > self.max_speed:
-            scale = self.max_speed / speed
-            self._vx *= scale
-            self._vy *= scale
+            k = self.max_speed / speed
+            self._v = [vx * k, vy * k]
+            vx, vy = self._v
 
         # Device +y (towards the top edge) is screen "up", i.e. negative y.
-        return (
-            self._vx * dt * self.pixels_per_meter,
-            -self._vy * dt * self.pixels_per_meter,
-        )
+        return vx * dt * self.pixels_per_meter, -vy * dt * self.pixels_per_meter
 
     def reset(self) -> None:
-        self._vx = self._vy = 0.0
-        self._still = 0
+        """Forget motion in progress (e.g. while the phone is "lifted")."""
+        if self.moving:
+            self._end_stroke()
+        self._v = [0.0, 0.0]
+        self._pending = [0.0, 0.0]
+        self._still_t = 0.0
