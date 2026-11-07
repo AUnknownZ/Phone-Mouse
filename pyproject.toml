@@ -1,0 +1,26 @@
+[project]
+name = "phone-mouse"
+version = "0.1.0"
+description = "Use your phone's motion sensors and touchscreen as a computer mouse"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.9",
+    "pynput>=1.7",
+    "cryptography>=42",
+    "qrcode>=7.4",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[tool.setuptools]
+packages = ["phone_mouse"]
+
+[tool.setuptools.package-data]
+phone_mouse = ["static/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
