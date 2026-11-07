@@ -43,34 +43,65 @@ Security > Accessibility**, then restart the server.
 
 | Mode | How you use it | Sensor |
 | --- | --- | --- |
-| **Air** (default) | Hold your thumb on the big pad and point the phone at the screen like a laser pointer. Lift your thumb to freeze the cursor. | Gyroscope |
-| **Desk** (experimental) | Lay the phone flat and slide it like a mouse. Hold the pad to "lift" it and reposition. | Accelerometer |
-| **Touch** | The pad is a laptop-style trackpad: tap to click, two-finger tap to right-click, two-finger drag to scroll. | Touchscreen |
+| **Air** (default) | Hold the phone like a TV remote and point it at the screen. Sweep left/right and tilt up/down; the cursor moves while your thumb is on the big pad (or a button). Rolling the phone is ignored. | Gyroscope + gravity |
+| **Desk** | Lay the phone flat and slide it like a mouse, in short strokes. Hold the pad to "lift" it and reposition. | Accelerometer |
+| **Touch** | Laptop-style trackpad with L/R buttons underneath and a scroll strip along the edge. Tap to click, two-finger tap to right-click, two-finger drag to scroll. | Touchscreen |
+
+Air mode has two **styles** (gear icon > Style):
+
+- **Air mouse:** the cursor *speed* follows how fast you sweep the phone,
+  like a gyro air mouse. An optional acceleration curve keeps slow motions
+  precise while fast flicks cross the screen.
+- **Laser pointer:** the cursor goes *where the phone points*. Point at the
+  cursor and tap **Re-aim here** (or double-tap the pad) once. After that, aiming
+  10° right puts the cursor at the same spot every time, and pointing back
+  returns it home. Heading drifts slowly (the gyro has no absolute
+  reference), so re-aim when it wanders off. Elevation comes from gravity
+  and doesn't drift.
 
 In every mode:
 
 - **L** and **R** are the mouse buttons. Hold **L** while moving to drag, for
   example to box-select in CAD or move a component in a schematic editor.
-- The narrow strip between them is the **scroll wheel**. Drag it up or down to
-  scroll, or tap it for a middle-click. Many CAD tools pan with middle-drag.
-- The gear icon opens **Settings**: sensitivity, invert axes, and a live
-  readout of the raw sensor values, which helps when tuning.
+  In Air mode, holding a button also aims, so a drag is one motion. Motion is
+  ignored for a moment after each press so clicks land where you pointed.
+- The narrow strip is the **scroll wheel**. Drag it up or down to scroll, or
+  tap it for a middle-click. Many CAD tools pan with middle-drag.
+- The gear icon opens **Settings for the current mode**: sensitivity and
+  invert axes are separate for Air, Desk and Touch. Air has style and
+  activation options; Touch lets you put the buttons above or below the pad
+  and the scroll strip on the left or right.
 
-### Why Air mode is the default
+### Gyro axes (iPhone vs Android)
 
-Getting *position* from an IMU means integrating acceleration twice, and any
-small sensor bias grows quadratically into drift. Within a second the phone
-"thinks" it has moved centimetres while it sits still. Desk mode works around
-this with zero-velocity updates: when the phone stops, velocity snaps to zero
-and the sensor bias is re-estimated. That makes it usable for coarse
-pushes, but it's not precise.
+Browsers don't agree on which axes the gyroscope's `alpha`/`beta`/`gamma`
+values refer to. Chrome on Android follows the web standard, while Safari
+(and every other browser on iOS) reports them in a different order. If the
+axes are read in the wrong order, tilting moves the cursor sideways and turning does
+nothing. The server checks which order correctly predicts how gravity rotates
+as you move the phone, and picks the right one automatically. Settings
+shows the result ("iOS (auto-detected)"), and you can force **Standard** or
+**iOS** there if needed.
 
-The gyroscope measures *rotation rate* directly, which only needs one
-integration step to become cursor motion, so it's accurate and doesn't drift.
-Air mode projects the rotation onto the world's vertical axis using gravity,
-so it works whether you hold the phone flat like a remote or upright like a
-camera. A small deadzone removes hand tremor, and an acceleration curve keeps
-slow motions precise while fast flicks cross the screen.
+### What Desk mode can and can't do
+
+A real mouse has an optical sensor that sees the desk move under it. A phone
+only has an accelerometer, so position has to come from integrating
+acceleration twice, which drifts within a second. Desk mode makes this
+usable by treating each push as one *stroke*:
+
+- Velocity is integrated without any damping, so the cursor travels in
+  proportion to the *distance* the phone moved, not to how hard you pushed.
+- A stroke ends when the phone decelerates, and braking can never pull the
+  cursor backwards, so there's no "bounce back".
+- While the phone rests, velocity is held at zero and sensor bias is
+  re-learned.
+
+In simulation with realistic sensor noise, strokes from 1 cm to 15 cm move the
+cursor 98–100% of the true distance with no bounce back
+(`tests/test_motion.py`). The physical limit: very slow, gentle slides
+produce less acceleration than the sensor's noise and can't be told apart
+from resting. For precise work such as CAD, use Air mode or Touch.
 
 ## About the hardware buttons
 
@@ -104,11 +135,11 @@ when your computer's LAN IP changes, which means Safari will ask you to trust it
 phone_mouse/
   server.py      aiohttp HTTPS + WebSocket server, pairing token, QR code
   controller.py  wire protocol -> mouse actions (validation, clamping, buttons)
-  motion.py      GyroPointer (air) and SlidePointer (desk) signal processing
+  motion.py      axis detection, air mouse, laser pointer and desk stroke filters
   mouse.py       pynput backend + in-memory backend for tests
   certs.py       self-signed certificate for the LAN IP
   static/        the phone web app (HTML/CSS/JS)
-tests/           pytest suite
+tests/           pytest suite (sim.py synthesises realistic sensor streams)
 ```
 
 ## Development
