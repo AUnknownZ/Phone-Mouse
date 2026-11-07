@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0e0f13">
+  <title>Phone Mouse</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="status" id="status"><span class="dot"></span><span id="status-text">Not connected</span></div>
+      <div class="modes" role="tablist">
+        <button data-mode="air" class="mode" role="tab">Air</button>
+        <button data-mode="desk" class="mode" role="tab">Desk</button>
+        <button data-mode="touch" class="mode" role="tab">Touch</button>
+      </div>
+      <button id="settings-btn" class="icon" aria-label="Settings">&#9881;</button>
+    </header>
+
+    <section class="buttons">
+      <button class="mbtn" id="btn-left" data-button="left">L</button>
+      <div class="wheel" id="wheel" aria-label="Scroll wheel"><span></span><span></span><span></span></div>
+      <button class="mbtn" id="btn-right" data-button="right">R</button>
+    </section>
+
+    <section class="pad" id="pad">
+      <div class="pad-title" id="pad-title"></div>
+      <div class="pad-hint" id="pad-hint"></div>
+    </section>
+  </div>
+
+  <div class="sheet hidden" id="settings">
+    <div class="sheet-body">
+      <h2>Settings</h2>
+      <label class="row">Sensitivity <output id="sens-out">1.0</output>
+        <input type="range" id="sens" min="0.2" max="4" step="0.1" value="1">
+      </label>
+      <label class="row check"><input type="checkbox" id="invx"> Invert horizontal</label>
+      <label class="row check"><input type="checkbox" id="invy"> Invert vertical</label>
+      <div class="readout" id="readout">No sensor data yet</div>
+      <button class="primary" id="settings-close">Done</button>
+    </div>
+  </div>
+
+  <div class="overlay" id="start">
+    <div class="start-card">
+      <h1>Phone Mouse</h1>
+      <p>Turns this phone into a mouse for your computer.</p>
+      <button class="primary big" id="start-btn">Tap to connect</button>
+      <p class="small" id="start-msg"></p>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
