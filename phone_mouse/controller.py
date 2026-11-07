@@ -121,6 +121,7 @@ class Controller:
         self._freeze_until = 0.0
         self._last_target: tuple[int, int] | None = None
         self._reported_axes: tuple[str, str] | None = None
+        self._reported_lifted: bool | None = None
 
     def handle(self, msg: Any) -> dict | None:
         """Apply one message. Returns a reply to send back, if any."""
@@ -167,12 +168,20 @@ class Controller:
             return detected, "detected"
         return ("ios" if s.platform == "ios" else "w3c"), "assumed"
 
-    def _axes_status(self) -> dict | None:
+    def _status(self, lifted: bool | None = None) -> dict | None:
+        payload: dict = {}
         axes = self.axes
-        if axes == self._reported_axes:
+        if axes != self._reported_axes:
+            self._reported_axes = axes
+            payload["axes"] = axes[0]
+            payload["axesSource"] = axes[1]
+        if lifted is not None and lifted != self._reported_lifted:
+            self._reported_lifted = lifted
+            payload["lifted"] = lifted
+        if not payload:
             return None
-        self._reported_axes = axes
-        return {"type": "status", "axes": axes[0], "axesSource": axes[1]}
+        payload["type"] = "status"
+        return payload
 
     def _emit_move(self, dx: float, dy: float, mode: str) -> None:
         s = self.settings.modes[mode]
@@ -200,12 +209,13 @@ class Controller:
         if mode == "air":
             self._air(omega, dt, up, active)
         elif acc is not None:
-            dx, dy = self.slide.update(acc, dt, omega)
-            if active:
-                self._emit_move(dx, dy, "desk")
-            else:
+            dx, dy = self.slide.update(acc, dt, omega, up)
+            if not active:
                 self.slide.reset()
-        return self._axes_status()
+            elif not self.slide.lifted:
+                self._emit_move(dx, dy, "desk")
+        lifted = self.slide.lifted if mode == "desk" else None
+        return self._status(lifted)
 
     def _air(self, omega, dt, up, active: bool) -> None:
         s = self.settings.modes["air"]
@@ -294,4 +304,4 @@ class Controller:
                     s.modes[name].apply(values)
         self.laser.hold()
         self._last_target = None
-        return self._axes_status()
+        return self._status()

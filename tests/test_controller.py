@@ -177,22 +177,51 @@ def _tilted(extra_deg):
 # ----------------------------------------------------------------- desk mode
 
 
+def _flat_grav(acc):
+    # accelerationIncludingGravity on a phone lying screen-up.
+    return [acc[0], acc[1], 9.81 + acc[2]]
+
+
 def test_desk_stroke_moves_without_bounce_back(ctl, clock):
     ctl.handle({"type": "settings", "mode": "desk"})
     xs = []
     for acc in desk_stroke_samples([(0.06, 0, 0.3, 0.5)], noise=0.04, lag_samples=2):
         ctl.handle({"type": "motion", "dt": DT, "rot": [0, 0, 0], "acc": list(acc),
-                    "grav": [0, 0, 9.81]})
+                    "grav": _flat_grav(acc)})
         xs.append(ctl.mouse.x)
     assert xs[-1] > 700
     assert max(xs) - xs[-1] < 20
 
 
-def test_desk_lifted_ignores_motion(ctl):
+def test_lifting_the_phone_stops_the_cursor_until_it_is_set_down(ctl):
+    ctl.handle({"type": "settings", "mode": "desk"})
+    tilted = [0.0, 9.81 * math.sin(math.radians(35)), 9.81 * math.cos(math.radians(35))]
+    replies = []
+    for acc in desk_stroke_samples([(0.06, 0, 0.3, 0.2)]):
+        reply = ctl.handle({"type": "motion", "dt": DT, "rot": [0, 0, 0], "acc": list(acc),
+                            "grav": tilted})
+        if reply:
+            replies.append(reply)
+    assert ctl.mouse.events == []
+    assert ctl.slide.lifted
+    assert {"type": "status", "lifted": True} in replies or any(
+        r.get("lifted") is True for r in replies
+    )
+    for _ in range(10):
+        ctl.handle({"type": "motion", "dt": DT, "rot": [0, 0, 0], "acc": [0, 0, 0],
+                    "grav": [0, 0, 9.81]})
+    assert not ctl.slide.lifted
+    for acc in desk_stroke_samples([(0.06, 0, 0.3, 0.2)]):
+        ctl.handle({"type": "motion", "dt": DT, "rot": [0, 0, 0], "acc": list(acc),
+                    "grav": _flat_grav(acc)})
+    assert ctl.mouse.x > 500
+
+
+def test_desk_pad_hold_still_pauses(ctl):
     ctl.handle({"type": "settings", "mode": "desk"})
     for acc in desk_stroke_samples([(0.06, 0, 0.3, 0.5)]):
         ctl.handle({"type": "motion", "dt": DT, "rot": [0, 0, 0], "acc": list(acc),
-                    "grav": [0, 0, 9.81], "active": False})
+                    "grav": _flat_grav(acc), "active": False})
     assert ctl.mouse.events == []
 
 

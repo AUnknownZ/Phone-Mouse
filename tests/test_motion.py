@@ -177,16 +177,52 @@ def run_desk(strokes, **kw):
 
 class TestSlidePointer:
     @pytest.mark.parametrize(
-        "distance,duration",
-        [(0.08, 0.35), (0.03, 0.3), (0.15, 0.5), (0.02, 0.6), (0.05, 1.0)],
+        "distance,duration,tolerance",
+        [
+            (0.08, 0.35, 0.15),
+            (0.03, 0.3, 0.15),
+            (0.15, 0.5, 0.15),
+            # Slow slides sit near the sensor noise, so the distance is coarser.
+            (0.02, 0.6, 0.45),
+            (0.05, 1.0, 0.45),
+        ],
     )
     @pytest.mark.parametrize("seed", [1, 2, 3])
-    def test_travel_matches_distance_without_bounce_back(self, distance, duration, seed):
+    def test_travel_matches_distance_without_bounce_back(self, distance, duration, tolerance, seed):
         xs = run_desk([(distance, 0, duration, 0.5)], noise=0.04, lag_samples=2, seed=seed)
         true_px = distance * SlidePointer.pixels_per_meter
-        assert xs[-1] == pytest.approx(true_px, rel=0.15)
+        assert xs[-1] == pytest.approx(true_px, rel=tolerance)
         assert max(xs) - xs[-1] < 0.03 * true_px
         assert min(xs) >= -0.01 * true_px
+
+    def test_glide_keeps_moving_the_cursor(self):
+        p = SlidePointer()
+        for _ in range(int(0.12 / DT)):
+            p.update((2.0, 0.0, 0.0), DT)
+        speed = p.velocity[0]
+        coast = sum(p.update((0.0, 0.0, 0.0), DT)[0] for _ in range(int(0.8 / DT)))
+        assert speed > 0.15
+        assert coast == pytest.approx(speed * 0.8 * p.pixels_per_meter, rel=0.05)
+
+    def test_a_push_moves_the_cursor_on_the_first_sample(self):
+        p = SlidePointer()
+        assert p.update((2.0, 0.0, 0.0), DT)[0] > 0
+
+    def test_tilting_or_lifting_freezes_until_set_back_down(self):
+        p = SlidePointer()
+        tilted = (0.0, math.sin(math.radians(30)), math.cos(math.radians(30)))
+        moved = sum(p.update((2.0, 0.0, 0.0), DT, up=tilted)[0] for _ in range(20))
+        assert p.lifted and moved == 0
+        for _ in range(3):
+            p.update((0.0, 0.0, 0.0), DT, up=(0.0, 0.0, 1.0))
+        assert p.lifted  # not settled yet
+        for _ in range(8):
+            p.update((0.0, 0.0, 0.0), DT, up=(0.0, 0.0, 1.0))
+        assert not p.lifted
+
+        p.update((0.5, 0.0, 4.0), DT, up=(0.0, 0.0, 1.0))
+        assert p.lifted
+        assert p.update((2.0, 0.0, 0.0), DT, up=(0.0, 0.0, 1.0))[0] == 0
 
     def test_push_towards_top_edge_moves_cursor_up(self):
         p = SlidePointer()

@@ -318,132 +318,152 @@ class SlidePointer:
     """Desk mouse: slide the phone flat on a surface.
 
     A phone has no optical sensor, so position comes from integrating the
-    accelerometer twice, which drifts. Integration is limited to individual
-    strokes (start moving, push, stop) with these rules:
+    accelerometer twice. Velocity is integrated with no damping, so cursor
+    travel follows the distance the phone moved, including the glide after
+    the push. Braking can cancel that velocity but cannot reverse it, so the
+    cursor does not bounce back. While the phone rests, velocity is zero and
+    the sensor bias is re-estimated.
 
-    * Velocity is integrated without leakage, so cursor travel tracks the
-      distance moved rather than how hard the phone was pushed.
-    * A stroke is confirmed once acceleration clearly rises above noise; the
-      distance covered before that point is caught up immediately.
-    * A stroke ends when speed falls to a fraction of its peak, or as soon
-      as velocity would point backwards, so braking can't pull the cursor
-      back ("bounce back").
-    * For a short while after a stroke, motion in the opposite direction
-      only counts once it is clearly a deliberate push back.
-    * While the phone rests, velocity is zero and the sensor bias is
-      re-estimated.
-
-    Very slow, gentle slides produce acceleration below the sensor noise
-    and can't be told apart from resting; that is a hardware limit.
+    Lifting the phone off the desk (tilting it, or a clear upward
+    acceleration) freezes the cursor until it is set back down flat and still.
     """
 
     pixels_per_meter: float = 15000.0
-    start_accel: float = 0.3
+    start_accel: float = 0.2
     still_accel: float = 0.12
     still_gyro_dps: float = 10.0
-    still_time: float = 0.12
-    end_fraction: float = 0.15
-    reverse_fraction: float = 0.5
-    min_reverse_speed: float = 0.05
-    reverse_window: float = 0.5
-    max_stroke_time: float = 2.0
+    still_time: float = 0.1
+    end_speed: float = 0.02
     bias_rate: float = 0.03
     max_speed: float = 2.0
+    # Lifted off the desk: tilted, or a clear upward acceleration.
+    lift_tilt_deg: float = 20.0
+    resume_tilt_deg: float = 10.0
+    lift_az: float = 3.5
+    resume_time: float = 0.08
     moving: bool = False
+    lifted: bool = False
     _v: list[float] = field(default_factory=lambda: [0.0, 0.0])
     _bias: list[float] = field(default_factory=lambda: [0.0, 0.0])
-    _pending: list[float] = field(default_factory=lambda: [0.0, 0.0])
-    _peak: float = 0.0
     _dir: tuple[float, float] = (0.0, 0.0)
-    _last_peak: float = 0.0
-    _since_stroke: float = math.inf
+    _peak: float = 0.0
     _still_t: float = 0.0
-    _stroke_t: float = 0.0
+    _down_t: float = 0.0
+    _brake_t: float = 0.0
 
     @property
     def velocity(self) -> tuple[float, float]:
         return self._v[0], self._v[1]
 
-    def _end_stroke(self) -> None:
+    def _stop(self, brake: bool = False) -> None:
         self.moving = False
-        self._last_peak = self._peak
-        self._since_stroke = 0.0
         self._v = [0.0, 0.0]
-        self._pending = [0.0, 0.0]
+        self._peak = 0.0
+        if brake:
+            # The deceleration that just stopped the phone is still arriving.
+            # Ignore it until it dies down; the next push starts after that.
+            self._brake_t = 1.0
+        else:
+            self._dir = (0.0, 0.0)
+            self._brake_t = 0.0
+
+    @staticmethod
+    def _tilt_deg(up: Vec3 | None) -> float:
+        """Angle between the screen and the desk. 0 means lying flat, screen up."""
+        if up is None:
+            return 0.0
+        return math.degrees(math.acos(max(-1.0, min(1.0, up[2]))))
+
+    def _sense_lift(self, az: float, gyro: float, up: Vec3 | None, a_mag: float, dt: float) -> None:
+        tilt = self._tilt_deg(up)
+        if not self.lifted:
+            if tilt >= self.lift_tilt_deg or az >= self.lift_az:
+                self.lifted = True
+                self._down_t = 0.0
+                self._stop()
+            return
+        # Back on the desk only once it is flat and quiet. Moving it through
+        # the air, even held flat, keeps the cursor frozen.
+        settled = (
+            tilt <= self.resume_tilt_deg
+            and abs(az) < 1.0
+            and a_mag < self.still_accel
+            and gyro < self.still_gyro_dps
+        )
+        if settled:
+            self._down_t += dt
+            if self._down_t >= self.resume_time:
+                self.lifted = False
+                self._down_t = 0.0
+        else:
+            self._down_t = 0.0
 
     def update(
         self,
         acceleration: Vec3,
         dt: float,
         omega: Vec3 | None = None,
+        up: Vec3 | None = None,
     ) -> tuple[float, float]:
         ax = acceleration[0] - self._bias[0]
         ay = acceleration[1] - self._bias[1]
+        az = acceleration[2]
         a_mag = math.hypot(ax, ay)
         gyro = _norm(omega) if omega is not None else 0.0
-        self._since_stroke += dt
+        self._sense_lift(az, gyro, up, a_mag, dt)
+        if self.lifted:
+            return 0.0, 0.0
 
-        if a_mag < self.still_accel and gyro < self.still_gyro_dps:
-            self._still_t += dt
-        else:
-            self._still_t = 0.0
-
-        # Stopping takes visible deceleration, so "quiet" while still fast
-        # means gliding at constant speed: keep the stroke alive a bit longer.
-        coasting = (
-            self.moving
-            and math.hypot(*self._v) > 0.5 * self._peak
-            and self._still_t < 3 * self.still_time
-        )
-        if self._still_t >= self.still_time and not coasting:
-            if self.moving:
-                self._end_stroke()
-            elif self._since_stroke > self.reverse_window:
+        quiet = a_mag < self.still_accel and gyro < self.still_gyro_dps
+        self._still_t = self._still_t + dt if quiet else 0.0
+        speed = math.hypot(*self._v)
+        # Quiet and no longer sliding: at rest. Quiet but still fast: gliding,
+        # so keep the velocity instead of dropping the cursor mid-move.
+        if self._still_t >= self.still_time and speed < self.end_speed:
+            if not self.moving:
                 self._bias[0] += self.bias_rate * ax
                 self._bias[1] += self.bias_rate * ay
-            self._v = [0.0, 0.0]
-            self._pending = [0.0, 0.0]
+            self._stop()
             return 0.0, 0.0
+
+        if self._brake_t > 0.0:
+            # Hold until the braking acceleration itself dies down, so the
+            # tail of a stop can't become a move in the opposite direction.
+            opposing = a_mag >= self.still_accel and ax * self._dir[0] + ay * self._dir[1] < 0
+            if opposing:
+                return 0.0, 0.0
+            self._brake_t = 0.0
+            self._dir = (0.0, 0.0)
+
+        if not self.moving:
+            if a_mag < self.start_accel:
+                return 0.0, 0.0
+            self.moving = True
 
         self._v[0] += ax * dt
         self._v[1] += ay * dt
         vx, vy = self._v
         speed = math.hypot(vx, vy)
-
-        if not self.moving:
-            self._pending[0] += vx * dt
-            self._pending[1] += vy * dt
-            recent = self._since_stroke < self.reverse_window
-            backwards = recent and vx * self._dir[0] + vy * self._dir[1] < 0
-            if backwards:
-                needed = max(self.reverse_fraction * self._last_peak, self.min_reverse_speed)
-                if speed < needed:
-                    return 0.0, 0.0
-                # The catch-up here would mostly be braking residue.
-                self._pending = [0.0, 0.0]
-            elif a_mag < self.start_accel or speed == 0:
-                return 0.0, 0.0
-            self.moving = True
-            self._peak = speed
-            self._dir = (vx / speed, vy / speed)
-            self._stroke_t = 0.0
-            px, py = self._pending
-            self._pending = [0.0, 0.0]
-            return px * self.pixels_per_meter, -py * self.pixels_per_meter
-
-        self._stroke_t += dt
-        if speed > self._peak:
-            self._peak = speed
-            self._dir = (vx / speed, vy / speed)
-        along = vx * self._dir[0] + vy * self._dir[1]
-        if (
-            along <= 0
-            or speed < self.end_fraction * self._peak
-            or self._stroke_t > self.max_stroke_time
-        ):
-            self._end_stroke()
+        if speed == 0:
+            self._stop()
             return 0.0, 0.0
-
+        # Braking may shrink the velocity but cannot flip it.
+        if self._peak > 0.05 and vx * self._dir[0] + vy * self._dir[1] < 0:
+            self._stop(brake=True)
+            return 0.0, 0.0
+        self._dir = (vx / speed, vy / speed)
+        self._peak = max(self._peak, speed)
+        # Quiet and well below the speed this push reached: the phone has
+        # stopped (or only a little residual velocity is left). A real glide
+        # keeps its speed, so it is not cut off here.
+        if quiet and self._peak > 0.05 and speed < 0.3 * self._peak:
+            self._stop(brake=True)
+            return 0.0, 0.0
+        # Only a slowing phone has stopped. The first samples of a push are
+        # slow too, and dropping them is what made the cursor feel late.
+        if speed < self.end_speed and ax * vx + ay * vy <= 0:
+            self._stop(brake=True)
+            return 0.0, 0.0
         if speed > self.max_speed:
             k = self.max_speed / speed
             self._v = [vx * k, vy * k]
@@ -453,9 +473,6 @@ class SlidePointer:
         return vx * dt * self.pixels_per_meter, -vy * dt * self.pixels_per_meter
 
     def reset(self) -> None:
-        """Forget motion in progress (e.g. while the phone is "lifted")."""
-        if self.moving:
-            self._end_stroke()
-        self._v = [0.0, 0.0]
-        self._pending = [0.0, 0.0]
+        """Forget motion in progress."""
+        self._stop()
         self._still_t = 0.0

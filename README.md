@@ -44,7 +44,7 @@ Security > Accessibility**, then restart the server.
 | Mode | How you use it | Sensor |
 | --- | --- | --- |
 | **Air** (default) | Hold the phone like a TV remote and point it at the screen. Sweep left/right and tilt up/down; the cursor moves while your thumb is on the big pad (or a button). Rolling the phone is ignored. | Gyroscope + gravity |
-| **Desk** | Lay the phone flat and slide it like a mouse, in short strokes. Hold the pad to "lift" it and reposition. | Accelerometer |
+| **Desk** | Lay the phone flat and slide it like a mouse. Lifting it off the desk pauses the cursor on its own. The area below the buttons is empty, so your hand can rest there. | Accelerometer |
 | **Touch** | Laptop-style trackpad with L/R buttons underneath and a scroll strip along the edge. Tap to click, two-finger tap to right-click, two-finger drag to scroll. | Touchscreen |
 
 Air mode has two **styles** (gear icon > Style):
@@ -92,10 +92,12 @@ usable by treating each push as one *stroke*:
 
 - Velocity is integrated without any damping, so the cursor travels in
   proportion to the *distance* the phone moved, not to how hard you pushed.
-- A stroke ends when the phone decelerates, and braking can never pull the
-  cursor backwards, so there's no "bounce back".
+- A glide at a steady speed keeps moving the cursor. Braking can never pull
+  the cursor backwards, so there's no "bounce back".
 - While the phone rests, velocity is held at zero and sensor bias is
   re-learned.
+- Tilting the phone, or a clear upward acceleration, means it has been
+  lifted: the cursor freezes until the phone is flat and still again.
 
 In simulation with realistic sensor noise, strokes from 1 cm to 15 cm move the
 cursor 98–100% of the true distance with no bounce back
