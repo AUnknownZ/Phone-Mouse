@@ -13,6 +13,8 @@ class MouseBackend(Protocol):
     def release(self, button: str) -> None: ...
     def click(self, button: str, count: int = 1) -> None: ...
     def scroll(self, dx: int, dy: int) -> None: ...
+    def get_position(self) -> tuple[int, int]: ...
+    def set_position(self, x: int, y: int) -> None: ...
 
 
 class PynputMouse:
@@ -46,6 +48,13 @@ class PynputMouse:
 
     def scroll(self, dx: int, dy: int) -> None:
         self._mouse.scroll(dx, dy)
+
+    def get_position(self) -> tuple[int, int]:
+        x, y = self._mouse.position
+        return int(x), int(y)
+
+    def set_position(self, x: int, y: int) -> None:
+        self._mouse.position = (x, y)
 
 
 class RecordingMouse:
@@ -81,3 +90,10 @@ class RecordingMouse:
 
     def scroll(self, dx: int, dy: int) -> None:
         self._log("scroll", dx, dy)
+
+    def get_position(self) -> tuple[int, int]:
+        return self.x, self.y
+
+    def set_position(self, x: int, y: int) -> None:
+        self.x, self.y = x, y
+        self._log("moveto", x, y)

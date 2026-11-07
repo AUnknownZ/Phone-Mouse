@@ -62,7 +62,10 @@ async def test_websocket_drives_mouse_and_releases_on_disconnect(client_and_mice
     await ws.send_json({"type": "button", "button": "left", "action": "down"})
     await ws.send_str("not json")
     await ws.send_json({"type": "ping", "t": 7})
-    assert await ws.receive_json() == {"type": "pong", "t": 7}
+    reply = await ws.receive_json()
+    while reply["type"] == "status":
+        reply = await ws.receive_json()
+    assert reply == {"type": "pong", "t": 7}
 
     mouse = mice[0]
     assert ("move", 20, 10) in mouse.events
