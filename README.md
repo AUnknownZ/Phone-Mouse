@@ -96,8 +96,10 @@ usable by treating each push as one *stroke*:
   the cursor backwards, so there's no "bounce back".
 - While the phone rests, velocity is held at zero and sensor bias is
   re-learned.
-- Tilting the phone, or a clear upward acceleration, means it has been
-  lifted: the cursor freezes until the phone is flat and still again.
+- Lifting is read from the Z axis. Flat on the desk, gravity along Z sits
+  near ±9.8 m/s² and the cursor tracks. Tipping the phone moves that
+  reading away from gravity and the cursor pauses. Setting the phone back
+  down brings Z back, and tracking resumes even if your hand is still on it.
 
 In simulation with realistic sensor noise, strokes from 1 cm to 15 cm move the
 cursor 98–100% of the true distance with no bounce back

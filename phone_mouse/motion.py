@@ -324,8 +324,13 @@ class SlidePointer:
     cursor does not bounce back. While the phone rests, velocity is zero and
     the sensor bias is re-estimated.
 
-    Lifting the phone off the desk (tilting it, or a clear upward
-    acceleration) freezes the cursor until it is set back down flat and still.
+    Lifting is decided from the Z axis. Flat on the desk, gravity along Z
+    is about ±9.8 m/s². Tipping the phone, or a sharp upward acceleration,
+    moves that reading away from gravity and freezes the cursor. Setting it
+    back down brings Z back to gravity, which resumes tracking. Horizontal
+    acceleration and the gyro are not part of that decision: at rest they
+    are too noisy, and requiring them to be quiet left the cursor stuck
+    on "lifted".
     """
 
     pixels_per_meter: float = 15000.0
@@ -336,11 +341,13 @@ class SlidePointer:
     end_speed: float = 0.02
     bias_rate: float = 0.03
     max_speed: float = 2.0
-    # Lifted off the desk: tilted, or a clear upward acceleration.
-    lift_tilt_deg: float = 20.0
-    resume_tilt_deg: float = 10.0
-    lift_az: float = 3.5
-    resume_time: float = 0.08
+    # |gravity along Z| above this means the screen is near horizontal.
+    down_gz: float = 8.4
+    # |gravity along Z| below this means the phone is clearly tipped up.
+    lift_gz: float = 6.8
+    lift_az: float = 5.0
+    lift_time: float = 0.06
+    resume_time: float = 0.1
     moving: bool = False
     lifted: bool = False
     _v: list[float] = field(default_factory=lambda: [0.0, 0.0])
@@ -349,7 +356,9 @@ class SlidePointer:
     _peak: float = 0.0
     _still_t: float = 0.0
     _down_t: float = 0.0
+    _lift_t: float = 0.0
     _brake_t: float = 0.0
+    _gz: float | None = None
 
     @property
     def velocity(self) -> tuple[float, float]:
@@ -367,33 +376,32 @@ class SlidePointer:
             self._dir = (0.0, 0.0)
             self._brake_t = 0.0
 
-    @staticmethod
-    def _tilt_deg(up: Vec3 | None) -> float:
-        """Angle between the screen and the desk. 0 means lying flat, screen up."""
-        if up is None:
-            return 0.0
-        return math.degrees(math.acos(max(-1.0, min(1.0, up[2]))))
-
-    def _sense_lift(self, az: float, gyro: float, up: Vec3 | None, a_mag: float, dt: float) -> None:
-        tilt = self._tilt_deg(up)
-        if not self.lifted:
-            if tilt >= self.lift_tilt_deg or az >= self.lift_az:
-                self.lifted = True
-                self._down_t = 0.0
-                self._stop()
+    def _sense_lift(self, grav: Vec3 | None, az: float, dt: float) -> None:
+        """Track whether the phone is on the desk, using the Z axis only."""
+        if grav is None:
             return
-        # Back on the desk only once it is flat and quiet. Moving it through
-        # the air, even held flat, keeps the cursor frozen.
-        settled = (
-            tilt <= self.resume_tilt_deg
-            and abs(az) < 1.0
-            and a_mag < self.still_accel
-            and gyro < self.still_gyro_dps
-        )
-        if settled:
+        # Smooth Z so one noisy sample cannot pin the state.
+        gz = grav[2]
+        self._gz = gz if self._gz is None else 0.6 * self._gz + 0.4 * gz
+        flat = abs(self._gz) >= self.down_gz
+        tipped = abs(self._gz) <= self.lift_gz or az >= self.lift_az
+        if not self.lifted:
+            if tipped and not flat:
+                self._lift_t += dt
+                if self._lift_t >= self.lift_time:
+                    self.lifted = True
+                    self._down_t = 0.0
+                    self._stop()
+            else:
+                self._lift_t = 0.0
+            return
+        # Put down: Z is back near ±g. Do not also require the phone to be
+        # still; a hand resting on it keeps the other axes noisy.
+        if flat:
             self._down_t += dt
             if self._down_t >= self.resume_time:
                 self.lifted = False
+                self._lift_t = 0.0
                 self._down_t = 0.0
         else:
             self._down_t = 0.0
@@ -403,14 +411,14 @@ class SlidePointer:
         acceleration: Vec3,
         dt: float,
         omega: Vec3 | None = None,
-        up: Vec3 | None = None,
+        grav: Vec3 | None = None,
     ) -> tuple[float, float]:
         ax = acceleration[0] - self._bias[0]
         ay = acceleration[1] - self._bias[1]
         az = acceleration[2]
         a_mag = math.hypot(ax, ay)
         gyro = _norm(omega) if omega is not None else 0.0
-        self._sense_lift(az, gyro, up, a_mag, dt)
+        self._sense_lift(grav, az, dt)
         if self.lifted:
             return 0.0, 0.0
 

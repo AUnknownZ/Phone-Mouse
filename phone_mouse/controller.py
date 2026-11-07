@@ -209,7 +209,10 @@ class Controller:
         if mode == "air":
             self._air(omega, dt, up, active)
         elif acc is not None:
-            dx, dy = self.slide.update(acc, dt, omega, up)
+            # Raw gravity, not the tilt estimated by subtracting linear
+            # acceleration. That subtraction is noisy on a phone and was
+            # keeping "lifted" from ever clearing. Air mode still uses `up`.
+            dx, dy = self.slide.update(acc, dt, omega, _vec3(msg.get("grav")))
             if not active:
                 self.slide.reset()
             elif not self.slide.lifted:

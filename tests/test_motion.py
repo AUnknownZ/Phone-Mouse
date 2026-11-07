@@ -208,21 +208,24 @@ class TestSlidePointer:
         p = SlidePointer()
         assert p.update((2.0, 0.0, 0.0), DT)[0] > 0
 
-    def test_tilting_or_lifting_freezes_until_set_back_down(self):
+    def test_z_gravity_lifts_and_putting_down_resumes_despite_noise(self):
         p = SlidePointer()
-        tilted = (0.0, math.sin(math.radians(30)), math.cos(math.radians(30)))
-        moved = sum(p.update((2.0, 0.0, 0.0), DT, up=tilted)[0] for _ in range(20))
-        assert p.lifted and moved == 0
-        for _ in range(3):
-            p.update((0.0, 0.0, 0.0), DT, up=(0.0, 0.0, 1.0))
-        assert p.lifted  # not settled yet
-        for _ in range(8):
-            p.update((0.0, 0.0, 0.0), DT, up=(0.0, 0.0, 1.0))
-        assert not p.lifted
-
-        p.update((0.5, 0.0, 4.0), DT, up=(0.0, 0.0, 1.0))
+        # Tipped up: gravity has left the Z axis.
+        tipped = (0.0, 8.5, 4.9)
+        samples = [p.update((2.0, 0.0, 0.0), DT, grav=tipped)[0] for _ in range(20)]
         assert p.lifted
-        assert p.update((2.0, 0.0, 0.0), DT, up=(0.0, 0.0, 1.0))[0] == 0
+        assert sum(samples[-8:]) == 0
+        # Back on the desk, but the other axes are noisy the way a real
+        # phone is while a hand rests on it. Z near ±g is what matters.
+        noisy = (0.45, -0.35, 0.7)
+        for _ in range(4):
+            p.update(noisy, DT, omega=(12.0, -8.0, 6.0), grav=(0.4, -0.3, 9.7))
+        assert p.lifted
+        for _ in range(12):
+            p.update(noisy, DT, omega=(12.0, -8.0, 6.0), grav=(0.4, -0.3, 9.7))
+        assert not p.lifted
+        again = sum(p.update((2.0, 0.0, 0.0), DT, grav=(0.2, 0.1, 9.8))[0] for _ in range(8))
+        assert again > 0
 
     def test_push_towards_top_edge_moves_cursor_up(self):
         p = SlidePointer()
