@@ -103,6 +103,18 @@ header { display: flex; align-items: center; gap: 8px; }
   color: var(--muted);
   transition: background 60ms, transform 60ms;
 }
+/* Desk mode: buttons stay up top, and the rest of the screen is an empty
+   palm rest. Nothing there accepts touches. */
+.mode-desk .surface {
+  grid-template-rows: minmax(108px, 24%) 1fr;
+  grid-template-areas:
+    "left wheel right"
+    "rest rest rest";
+}
+.mode-desk #pad { display: none; }
+.rest { display: none; }
+.mode-desk .rest { display: block; pointer-events: none; }
+
 .mode-air #btn-left, .mode-desk #btn-left { border-top-left-radius: 48px; }
 .mode-air #btn-right, .mode-desk #btn-right { border-top-right-radius: 48px; }
 .mode-touch .mbtn { font-size: 20px; }
@@ -203,6 +215,7 @@ header { display: flex; align-items: center; gap: 8px; }
 .row.check { justify-content: flex-start; }
 .row.check input { width: 20px; height: 20px; }
 .only-air, .only-touch { display: flex; flex-direction: column; gap: 14px; }
+.only-desk.hidden { display: none; }
 
 .seg { display: flex; background: var(--bg); border-radius: 10px; padding: 3px; }
 .seg button { border: 0; background: transparent; color: var(--muted); padding: 7px 10px; border-radius: 8px; font-size: 13px; font-weight: 600; touch-action: manipulation; }

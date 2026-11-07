@@ -36,6 +36,7 @@
   let lastMotionTs = null;
   let readoutAt = 0;
   let axesStatus = { axes: isIOS ? "ios" : "w3c", source: "assumed" };
+  let deskLifted = false;
 
   // ---------------------------------------------------------------- socket
 
@@ -76,9 +77,13 @@
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
       if (msg.type === "pong") {
-        setStatus("ok", `Connected · ${Math.round(performance.now() - msg.t)} ms`);
-      } else if (msg.type === "status" && msg.axes) {
-        axesStatus = { axes: msg.axes, source: msg.axesSource };
+        showConnection(Math.round(performance.now() - msg.t));
+      } else if (msg.type === "status") {
+        if (msg.axes) axesStatus = { axes: msg.axes, source: msg.axesSource };
+        if (typeof msg.lifted === "boolean") {
+          deskLifted = msg.lifted;
+          showConnection(null);
+        }
       }
     };
   }
@@ -108,8 +113,18 @@
       `rate    ${dt > 0 ? Math.round(1 / dt) : "–"} Hz`;
   }
 
+  function showConnection(lag) {
+    if (settings.mode === "desk" && deskLifted) {
+      setStatus("wait", "Lifted");
+      return;
+    }
+    setStatus("ok", lag == null ? "Connected" : `Connected · ${lag} ms`);
+  }
+
   function motionActive() {
-    if (settings.mode === "desk") return !padHeld;
+    // Desk mode watches the sensors for a lift, so a hand resting on the
+    // screen must not count as one.
+    if (settings.mode === "desk") return true;
     if (cur().activation === "always") return true;
     // Holding a mouse button also aims, so you can drag in one motion.
     return padHeld || buttonsHeld > 0;
@@ -298,7 +313,7 @@
   const PAD_TEXT = {
     "air-mouse": ["Hold here to aim", "Sweep the phone left/right and tilt it up/down. The cursor moves while your thumb is on this pad (or a button)."],
     "air-laser": ["Laser pointer", "Point at the cursor and tap Re-aim (or double-tap the pad). Then the cursor goes wherever you point while you hold the pad."],
-    "desk": ["Slide the phone", "Lay the phone flat and slide it like a mouse in short strokes. Hold this pad to \"lift\" and reposition."],
+    "desk": ["Slide the phone", "Lay the phone flat and slide it. Lifting it pauses the cursor."],
     "touch": ["Trackpad", "Drag to move. Tap to click, two-finger tap to right-click, two-finger drag to scroll."],
   };
   const STYLE_NOTES = {
@@ -334,6 +349,8 @@
     $("invy").checked = ms.invertY;
     document.querySelectorAll(".only-air").forEach((el) => el.classList.toggle("hidden", m !== "air"));
     document.querySelectorAll(".only-touch").forEach((el) => el.classList.toggle("hidden", m !== "touch"));
+    document.querySelectorAll(".only-desk").forEach((el) => el.classList.toggle("hidden", m !== "desk"));
+    if (m === "desk" && ws && ws.readyState === WebSocket.OPEN) showConnection(null);
     document.querySelectorAll(".only-air-mouse").forEach((el) => el.classList.toggle("hidden", ms.style !== "mouse"));
     if (m === "air") {
       $("accel").checked = ms.pointerAccel;
