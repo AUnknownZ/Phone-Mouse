@@ -350,7 +350,7 @@
     document.querySelectorAll(".only-air").forEach((el) => el.classList.toggle("hidden", m !== "air"));
     document.querySelectorAll(".only-touch").forEach((el) => el.classList.toggle("hidden", m !== "touch"));
     document.querySelectorAll(".only-desk").forEach((el) => el.classList.toggle("hidden", m !== "desk"));
-    if (m === "desk" && ws && ws.readyState === WebSocket.OPEN) showConnection(null);
+    if (ws && ws.readyState === WebSocket.OPEN) showConnection(null);
     document.querySelectorAll(".only-air-mouse").forEach((el) => el.classList.toggle("hidden", ms.style !== "mouse"));
     if (m === "air") {
       $("accel").checked = ms.pointerAccel;

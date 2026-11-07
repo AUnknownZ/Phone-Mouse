@@ -114,6 +114,13 @@ def test_manual_axes_override(ctl, clock):
     assert ctl.axes == ("w3c", "manual")
 
 
+def test_air_still_moves_when_the_phone_is_tipped_up(ctl, clock):
+    """Desk lift is a desk-only decision. Air keeps following the gyro."""
+    ctl.handle({"type": "settings", "platform": "other"})
+    gesture(ctl, clock, TILT_UP, 40, 0.4, "w3c", up0=(0.0, 0.87, 0.5))
+    assert ctl.mouse.y < -100
+
+
 def test_air_mode_moves_only_while_active(ctl, clock):
     gesture(ctl, clock, TILT_UP, 40, 0.3, "w3c", active=False)
     assert ctl.mouse.events == []
@@ -193,24 +200,28 @@ def test_desk_stroke_moves_without_bounce_back(ctl, clock):
     assert max(xs) - xs[-1] < 20
 
 
-def test_lifting_the_phone_stops_the_cursor_until_it_is_set_down(ctl):
+def test_lifting_the_phone_stops_the_cursor_until_z_gravity_returns(ctl):
     ctl.handle({"type": "settings", "mode": "desk"})
-    tilted = [0.0, 9.81 * math.sin(math.radians(35)), 9.81 * math.cos(math.radians(35))]
+    # About 60°: gravity is mostly across the screen, not along Z.
+    tipped = [0.0, 8.5, 4.9]
     replies = []
     for acc in desk_stroke_samples([(0.06, 0, 0.3, 0.2)]):
         reply = ctl.handle({"type": "motion", "dt": DT, "rot": [0, 0, 0], "acc": list(acc),
-                            "grav": tilted})
+                            "grav": tipped})
         if reply:
             replies.append(reply)
-    assert ctl.mouse.events == []
     assert ctl.slide.lifted
-    assert {"type": "status", "lifted": True} in replies or any(
-        r.get("lifted") is True for r in replies
-    )
-    for _ in range(10):
-        ctl.handle({"type": "motion", "dt": DT, "rot": [0, 0, 0], "acc": [0, 0, 0],
-                    "grav": [0, 0, 9.81]})
+    assert ctl.mouse.x < 80  # only the brief moment before the lift confirms
+    assert any(r.get("lifted") is True for r in replies)
+    # Put down. Z is back near g; the horizontal axes stay noisy.
+    saw_down = False
+    for _ in range(20):
+        reply = ctl.handle({"type": "motion", "dt": DT, "rot": [20, -15, 10],
+                            "acc": [0.4, -0.3, 0.6], "grav": [0.3, -0.2, 9.7]})
+        if reply and reply.get("lifted") is False:
+            saw_down = True
     assert not ctl.slide.lifted
+    assert saw_down
     for acc in desk_stroke_samples([(0.06, 0, 0.3, 0.2)]):
         ctl.handle({"type": "motion", "dt": DT, "rot": [0, 0, 0], "acc": list(acc),
                     "grav": _flat_grav(acc)})
