@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <div id="app">
+  <div id="app" class="mode-air">
     <header>
       <div class="status" id="status"><span class="dot"></span><span id="status-text">Not connected</span></div>
       <div class="modes" role="tablist">
@@ -22,28 +22,74 @@
       <button id="settings-btn" class="icon" aria-label="Settings">&#9881;</button>
     </header>
 
-    <section class="buttons">
+    <main class="surface" id="surface">
       <button class="mbtn" id="btn-left" data-button="left">L</button>
       <div class="wheel" id="wheel" aria-label="Scroll wheel"><span></span><span></span><span></span></div>
       <button class="mbtn" id="btn-right" data-button="right">R</button>
-    </section>
-
-    <section class="pad" id="pad">
-      <div class="pad-title" id="pad-title"></div>
-      <div class="pad-hint" id="pad-hint"></div>
-    </section>
+      <section class="pad" id="pad">
+        <div class="pad-title" id="pad-title"></div>
+        <div class="pad-hint" id="pad-hint"></div>
+        <button class="chip hidden" id="reaim">Re-aim here</button>
+      </section>
+    </main>
   </div>
 
   <div class="sheet hidden" id="settings">
     <div class="sheet-body">
-      <h2>Settings</h2>
+      <div class="sheet-head">
+        <h2 id="settings-title">Air mode</h2>
+        <button class="primary small-btn" id="settings-close">Done</button>
+      </div>
+      <p class="note">These settings only apply to this mode.</p>
+
       <label class="row">Sensitivity <output id="sens-out">1.0</output>
         <input type="range" id="sens" min="0.2" max="4" step="0.1" value="1">
       </label>
       <label class="row check"><input type="checkbox" id="invx"> Invert horizontal</label>
       <label class="row check"><input type="checkbox" id="invy"> Invert vertical</label>
+
+      <div class="only-air">
+        <div class="row">Style
+          <div class="seg" data-setting="style">
+            <button data-value="mouse">Air mouse</button>
+            <button data-value="laser">Laser pointer</button>
+          </div>
+        </div>
+        <p class="note" id="style-note"></p>
+        <div class="row">Cursor moves
+          <div class="seg" data-setting="activation">
+            <button data-value="hold">While holding pad</button>
+            <button data-value="always">Always</button>
+          </div>
+        </div>
+        <label class="row check only-air-mouse"><input type="checkbox" id="accel"> Speed up fast sweeps</label>
+      </div>
+
+      <div class="only-touch">
+        <div class="row">Buttons
+          <div class="seg" data-setting="buttons">
+            <button data-value="bottom">Below pad</button>
+            <button data-value="top">Above pad</button>
+          </div>
+        </div>
+        <div class="row">Scroll strip
+          <div class="seg" data-setting="wheelSide">
+            <button data-value="right">Right</button>
+            <button data-value="left">Left</button>
+          </div>
+        </div>
+        <label class="row check"><input type="checkbox" id="tapclick"> Tap pad to click</label>
+      </div>
+
+      <h3>Sensors (all modes)</h3>
+      <div class="row">Gyro axes
+        <div class="seg" data-setting="axes" data-global="1">
+          <button data-value="auto">Auto</button>
+          <button data-value="w3c">Standard</button>
+          <button data-value="ios">iOS</button>
+        </div>
+      </div>
       <div class="readout" id="readout">No sensor data yet</div>
-      <button class="primary" id="settings-close">Done</button>
     </div>
   </div>
 
