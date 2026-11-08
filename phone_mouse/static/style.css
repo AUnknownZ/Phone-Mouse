@@ -106,7 +106,9 @@ header { display: flex; align-items: center; gap: 8px; }
 /* Desk mode: buttons stay up top, and the rest of the screen is an empty
    palm rest. Nothing there accepts touches. */
 .mode-desk .surface {
-  grid-template-rows: minmax(108px, 24%) 1fr;
+  /* Same button height as the original layout: a tall L / wheel / R row,
+     with the rest of the screen left empty for the hand. */
+  grid-template-rows: 38% 1fr;
   grid-template-areas:
     "left wheel right"
     "rest rest rest";

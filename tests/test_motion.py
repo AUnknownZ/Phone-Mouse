@@ -256,6 +256,25 @@ class TestSlidePointer:
         assert q.lifted
         assert q.update((1.0, 0.0, 0.0), DT, grav=(0.0, 0.0, 12.8)) == (0.0, 0.0)
 
+    def test_a_small_tip_or_a_small_rise_pauses(self):
+        p = SlidePointer()
+        # About 16°: gravity has only started to leave the Z axis.
+        small_tip = (0.0, 2.7, 9.40)
+        for _ in range(8):
+            p.update((0.1, 0.0, 0.0), DT, grav=small_tip)
+        assert p.lifted
+        assert p.update((1.5, 0.0, 0.0), DT, grav=small_tip) == (0.0, 0.0)
+        # A rise of 1.3 m/s² above rest, phone still level.
+        q = SlidePointer()
+        for _ in range(8):
+            q.update((0.0, 0.0, 1.3), DT, grav=(0.1, -0.1, 9.85))
+        assert q.lifted
+        # A few degrees of wobble, and a mild vertical bias, stay on the desk.
+        r = SlidePointer()
+        for _ in range(40):
+            r.update((0.3, -0.2, 0.5), DT, grav=(0.6, -0.4, 9.72))
+        assert not r.lifted
+
     def test_push_towards_top_edge_moves_cursor_up(self):
         p = SlidePointer()
         dy = sum(p.update(s, DT)[1] for s in desk_stroke_samples([(0, 0.06, 0.3, 0.3)]))

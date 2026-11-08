@@ -345,13 +345,15 @@ class SlidePointer:
     bias_rate: float = 0.03
     max_speed: float = 2.0
     # Lift / put-down, from accelerationIncludingGravity (m/s^2), not from
-    # how still the other axes are.
-    lift_gxy: float = 5.0
-    lift_gz: float = 7.5
-    down_gz: float = 8.6
-    down_gxy: float = 3.2
-    lift_az: float = 2.5
-    lift_time: float = 0.08
+    # how still the other axes are. About 15° of tip, or a 1.2 m/s² rise
+    # above the resting vertical acceleration, is enough to pause.
+    lift_gxy: float = 2.0
+    lift_gz: float = 9.55
+    down_gz: float = 9.65
+    down_gxy: float = 2.8
+    lift_az: float = 1.2
+    down_az: float = 1.0
+    lift_time: float = 0.05
     resume_time: float = 0.12
     moving: bool = False
     lifted: bool = False
@@ -368,6 +370,7 @@ class SlidePointer:
     _lift_t: float = 0.0
     _down_t: float = 0.0
     _weak_t: float = 0.0
+    _az_bias: float = 0.0
 
     @property
     def velocity(self) -> tuple[float, float]:
@@ -388,8 +391,18 @@ class SlidePointer:
             return
         gxy = math.hypot(grav[0], grav[1])
         gz = abs(grav[2])
+        # A constant vertical bias is learned while the phone is flat, so the
+        # lift check is the change from that rest value.
+        if (
+            not self.lifted
+            and gz >= self.down_gz
+            and gxy <= self.down_gxy
+            and abs(az - self._az_bias) < self.lift_az
+        ):
+            self._az_bias += 0.08 * (az - self._az_bias)
+        az_delta = az - self._az_bias
         tipped = gxy >= self.lift_gxy and gz <= self.lift_gz
-        rising = az >= self.lift_az
+        rising = az_delta >= self.lift_az
         if not self.lifted:
             if tipped or rising:
                 self._lift_t += dt
@@ -402,7 +415,7 @@ class SlidePointer:
             return
         # Flat again. A hand on the phone keeps the other axes noisy, so
         # those are not part of this check.
-        if gz >= self.down_gz and gxy <= self.down_gxy and az < self.lift_az:
+        if gz >= self.down_gz and gxy <= self.down_gxy and az_delta < self.down_az:
             self._down_t += dt
             if self._down_t >= self.resume_time:
                 self.lifted = False

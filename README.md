@@ -98,10 +98,10 @@ usable by treating each push as one *stroke*:
 - While the phone rests, velocity is held at zero and sensor bias is
   re-learned.
 - Lifting pauses the cursor. Safari cannot read a pressure sensor on the
-  back of the phone, so lift is the phone tipping (gravity leaving the Z
-  axis) or a clear upward acceleration. Setting it flat again, with gravity
-  back along Z, resumes tracking even if your hand is still on it. A phone
-  carried perfectly flat in the air looks the same as one on the desk.
+  back of the phone, so a small tip (gravity starting to leave the Z axis,
+  about 15°) or a small upward acceleration pauses it. Setting it flat
+  again resumes tracking even if your hand is still on it. A phone carried
+  perfectly flat in the air looks the same as one on the desk.
 
 In simulation with realistic sensor noise, strokes from 1 cm to 15 cm move the
 cursor 98–100% of the true distance with no bounce back
