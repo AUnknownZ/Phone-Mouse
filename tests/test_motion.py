@@ -166,6 +166,12 @@ class TestLaserPointer:
         assert laser.target() == pytest.approx((300.0, 300.0))
 
 
+def settle_on_desk(p, n=12):
+    """Flat phone: teach the constant desk Z before a lift gesture."""
+    for _ in range(n):
+        p.update((0.0, 0.0, 0.0), DT, grav=(0.0, 0.0, 9.81))
+
+
 def run_desk(strokes, **kw):
     p = SlidePointer()
     xs, x = [], 0.0
@@ -224,7 +230,8 @@ class TestSlidePointer:
 
     def test_z_gravity_lifts_and_putting_down_resumes_despite_noise(self):
         p = SlidePointer()
-        # Tipped up: gravity has left the Z axis.
+        settle_on_desk(p)
+        # Tipped up: Z has left the constant desk reading by several m/s².
         tipped = (0.0, 8.5, 4.9)
         samples = [p.update((2.0, 0.0, 0.0), DT, grav=tipped)[0] for _ in range(20)]
         assert p.lifted
@@ -249,31 +256,31 @@ class TestSlidePointer:
             p.update((3.0, 0.0, 0.0), DT, grav=(3.0, 0.0, 9.8))
         assert not p.lifted
         assert p.moving
-        # Picked straight up: linear Z acceleration, phone still level.
+        # Picked straight up: Z jumps several m/s² above the desk constant.
         q = SlidePointer()
+        settle_on_desk(q)
         for _ in range(12):
             q.update((0.0, 0.0, 3.0), DT, grav=(0.0, 0.0, 12.8))
         assert q.lifted
         assert q.update((1.0, 0.0, 0.0), DT, grav=(0.0, 0.0, 12.8)) == (0.0, 0.0)
 
-    def test_a_small_tip_or_a_small_rise_pauses(self):
+    def test_laying_the_phone_flat_is_not_a_lift_but_a_z_jump_is(self):
         p = SlidePointer()
-        # About 16°: gravity has only started to leave the Z axis.
-        small_tip = (0.0, 2.7, 9.40)
-        for _ in range(8):
-            p.update((0.1, 0.0, 0.0), DT, grav=small_tip)
+        settle_on_desk(p)
+        # About 25°: the tilt used to set the phone down. Z only falls by ~0.9.
+        lay_down = (0.0, 4.14, 8.89)
+        for _ in range(20):
+            p.update((0.2, 0.0, 0.0), DT, grav=lay_down)
+        assert not p.lifted
+        # A 1.3 m/s² rise is still in that same small band.
+        for _ in range(12):
+            p.update((0.0, 0.0, 1.3), DT, grav=(0.1, -0.1, 11.1))
+        assert not p.lifted
+        # A pickup: Z is several m/s² above the constant desk reading.
+        for _ in range(6):
+            p.update((0.0, 0.0, 3.2), DT, grav=(0.0, 0.0, 13.0))
         assert p.lifted
-        assert p.update((1.5, 0.0, 0.0), DT, grav=small_tip) == (0.0, 0.0)
-        # A rise of 1.3 m/s² above rest, phone still level.
-        q = SlidePointer()
-        for _ in range(8):
-            q.update((0.0, 0.0, 1.3), DT, grav=(0.1, -0.1, 9.85))
-        assert q.lifted
-        # A few degrees of wobble, and a mild vertical bias, stay on the desk.
-        r = SlidePointer()
-        for _ in range(40):
-            r.update((0.3, -0.2, 0.5), DT, grav=(0.6, -0.4, 9.72))
-        assert not r.lifted
+        assert p.update((1.5, 0.0, 0.0), DT, grav=(0.0, 0.0, 13.0)) == (0.0, 0.0)
 
     def test_push_towards_top_edge_moves_cursor_up(self):
         p = SlidePointer()

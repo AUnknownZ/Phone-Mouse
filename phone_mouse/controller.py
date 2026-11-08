@@ -208,11 +208,16 @@ class Controller:
 
         if mode == "air":
             self._air(omega, dt, up, active)
-        elif acc is not None:
-            # Raw gravity, not the tilt estimated by subtracting linear
-            # acceleration. That subtraction is noisy on a phone and was
-            # keeping "lifted" from ever clearing. Air mode still uses `up`.
-            dx, dy = self.slide.update(acc, dt, omega, _vec3(msg.get("grav")))
+        elif mode == "desk" and (acc is not None or _vec3(msg.get("grav")) is not None):
+            # Raw gravity, including the Z specific force. Linear acceleration
+            # is often missing on iOS, and lift is read from this Z value
+            # against the constant desk reading. Air mode still uses `up`.
+            dx, dy = self.slide.update(
+                acc if acc is not None else (0.0, 0.0, 0.0),
+                dt,
+                omega,
+                _vec3(msg.get("grav")),
+            )
             if not active:
                 self.slide.reset()
             elif not self.slide.lifted:

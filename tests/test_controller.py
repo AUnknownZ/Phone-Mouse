@@ -202,7 +202,10 @@ def test_desk_stroke_moves_without_bounce_back(ctl, clock):
 
 def test_lifting_the_phone_stops_the_cursor_until_z_gravity_returns(ctl):
     ctl.handle({"type": "settings", "mode": "desk"})
-    # About 60°: gravity is mostly across the screen, not along Z.
+    for _ in range(12):
+        ctl.handle({"type": "motion", "dt": DT, "rot": [0, 0, 0], "acc": [0, 0, 0],
+                    "grav": [0.0, 0.0, 9.81]})
+    # About 60°: Z has left the constant desk reading.
     tipped = [0.0, 8.5, 4.9]
     replies = []
     for acc in desk_stroke_samples([(0.06, 0, 0.3, 0.2)]):

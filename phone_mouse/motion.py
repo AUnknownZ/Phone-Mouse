@@ -324,9 +324,11 @@ class SlidePointer:
       not keep the last speed, and a weak leftover acceleration cannot speed
       it up. A very gentle slide may coast briefly, because its acceleration
       dips into the noise and that dip is not a stop.
-    * While the phone is lifted (tipped, or a clear upward acceleration on Z)
-      the output is zero. Setting it flat again resumes tracking. There is
-      no pressure sensor on the back of an iPhone that a web page can read.
+    * Lifting pauses the cursor. The phone's Z acceleration is compared with
+      the constant reading it has while flat on the desk. A pickup moves
+      that reading by a few m/s². The smaller tilt used to set the phone
+      down does not. There is no pressure sensor on the back of an iPhone
+      that a web page can read.
 
     Position is the integral of horizontal acceleration, one stroke at a time.
     At rest the velocity is zero and the sensor bias is re-learned.
@@ -344,17 +346,12 @@ class SlidePointer:
     max_stroke_time: float = 2.0
     bias_rate: float = 0.03
     max_speed: float = 2.0
-    # Lift / put-down, from accelerationIncludingGravity (m/s^2), not from
-    # how still the other axes are. About 15° of tip, or a 1.2 m/s² rise
-    # above the resting vertical acceleration, is enough to pause.
-    lift_gxy: float = 2.0
-    lift_gz: float = 9.55
-    down_gz: float = 9.65
-    down_gxy: float = 2.8
-    lift_az: float = 1.2
-    down_az: float = 1.0
-    lift_time: float = 0.05
-    resume_time: float = 0.12
+    # How far Z (m/s²) must move from the constant desk reading before it
+    # counts as a lift. A 30° tilt only changes Z by about 1.3; a pickup
+    # changes it by several.
+    lift_dz: float = 2.4
+    lift_time: float = 0.04
+    resume_time: float = 0.18
     moving: bool = False
     lifted: bool = False
     _v: list[float] = field(default_factory=lambda: [0.0, 0.0])
@@ -370,7 +367,13 @@ class SlidePointer:
     _lift_t: float = 0.0
     _down_t: float = 0.0
     _weak_t: float = 0.0
-    _az_bias: float = 0.0
+    _rest_ready: bool = False
+    _gz_rest: float = 0.0
+    _g_rest: float = 0.0
+    _az_rest: float = 0.0
+    _seed_gz: float = 0.0
+    _seed_g: float = 0.0
+    _seed_n: int = 0
 
     @property
     def velocity(self) -> tuple[float, float]:
@@ -387,24 +390,63 @@ class SlidePointer:
         self._weak_t = 0.0
 
     def _sense_lift(self, grav: Vec3 | None, az: float, dt: float) -> None:
+        """Pause when Z leaves the constant desk reading by a wide margin.
+
+        On the desk, ``accelerationIncludingGravity`` along Z sits at one
+        value (about ±9.8, screen up). Tilting the phone onto the desk
+        rotates that vector and only changes Z by a fraction of g. Picking
+        the phone up adds a real acceleration, so Z, or the size of the
+        whole vector, jumps by a few m/s².
+        """
         if grav is None:
             return
-        gxy = math.hypot(grav[0], grav[1])
-        gz = abs(grav[2])
-        # A constant vertical bias is learned while the phone is flat, so the
-        # lift check is the change from that rest value.
-        if (
-            not self.lifted
-            and gz >= self.down_gz
-            and gxy <= self.down_gxy
-            and abs(az - self._az_bias) < self.lift_az
-        ):
-            self._az_bias += 0.08 * (az - self._az_bias)
-        az_delta = az - self._az_bias
-        tipped = gxy >= self.lift_gxy and gz <= self.lift_gz
-        rising = az_delta >= self.lift_az
+        gx, gy, gz = grav
+        gxy = math.hypot(gx, gy)
+        mag = _norm(grav)
+        # Mostly gravity along Z: the pose of a phone lying on the desk,
+        # including the mild tilt used to set it down. About 26°.
+        flatish = abs(gz) >= 8.8 and gxy <= 4.5
+
+        if not self._rest_ready:
+            if flatish:
+                self._seed_gz += gz
+                self._seed_g += mag
+                self._seed_n += 1
+                if self._seed_n >= 8:
+                    self._gz_rest = self._seed_gz / self._seed_n
+                    self._g_rest = self._seed_g / self._seed_n
+                    self._az_rest = az
+                    self._rest_ready = True
+            else:
+                self._seed_gz = 0.0
+                self._seed_g = 0.0
+                self._seed_n = 0
+            return
+
+        sign = 1.0 if self._gz_rest >= 0 else -1.0
+        along = gz * sign
+        rest_along = abs(self._gz_rest)
+        rise = along - rest_along
+        drop = rest_along - along
+        dmag = mag - self._g_rest
+        az_rise = az - self._az_rest
+        jumped = (
+            rise >= self.lift_dz
+            or drop >= self.lift_dz
+            or dmag >= self.lift_dz
+            or az_rise >= self.lift_dz
+        )
+
         if not self.lifted:
-            if tipped or rising:
+            # Follow a slow wander of the desk reading. A real lift is too
+            # far away for this to absorb it.
+            if flatish and abs(rise) < 0.6 and abs(drop) < 0.6 and abs(dmag) < 0.8 and az_rise < 0.6:
+                self._gz_rest += 0.03 * (gz - self._gz_rest)
+                self._g_rest += 0.03 * (mag - self._g_rest)
+                self._az_rest += 0.03 * (az - self._az_rest)
+                self._lift_t = 0.0
+                return
+            if jumped:
                 self._lift_t += dt
                 if self._lift_t >= self.lift_time:
                     self.lifted = True
@@ -413,9 +455,10 @@ class SlidePointer:
             else:
                 self._lift_t = 0.0
             return
-        # Flat again. A hand on the phone keeps the other axes noisy, so
-        # those are not part of this check.
-        if gz >= self.down_gz and gxy <= self.down_gxy and az_delta < self.down_az:
+
+        # Back at the desk constant. Setting the phone down is this return.
+        back = flatish and abs(gz - self._gz_rest) <= 1.0 and dmag <= 1.6 and az_rise < self.lift_dz
+        if back:
             self._down_t += dt
             if self._down_t >= self.resume_time:
                 self.lifted = False
