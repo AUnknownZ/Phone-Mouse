@@ -92,14 +92,16 @@ usable by treating each push as one *stroke*:
 
 - Velocity is integrated without any damping, so the cursor travels in
   proportion to the *distance* the phone moved, not to how hard you pushed.
-- A glide at a steady speed keeps moving the cursor. Braking can never pull
-  the cursor backwards, so there's no "bounce back".
+- Each slide is one stroke. When the phone stops, the stroke ends: the
+  cursor does not keep the last speed, and a weak leftover acceleration
+  cannot speed it up. Braking can never pull the cursor backwards.
 - While the phone rests, velocity is held at zero and sensor bias is
   re-learned.
-- Lifting is read from the Z axis. Flat on the desk, gravity along Z sits
-  near ±9.8 m/s² and the cursor tracks. Tipping the phone moves that
-  reading away from gravity and the cursor pauses. Setting the phone back
-  down brings Z back, and tracking resumes even if your hand is still on it.
+- Lifting pauses the cursor. Safari cannot read a pressure sensor on the
+  back of the phone, so lift is the phone tipping (gravity leaving the Z
+  axis) or a clear upward acceleration. Setting it flat again, with gravity
+  back along Z, resumes tracking even if your hand is still on it. A phone
+  carried perfectly flat in the air looks the same as one on the desk.
 
 In simulation with realistic sensor noise, strokes from 1 cm to 15 cm move the
 cursor 98–100% of the true distance with no bounce back
