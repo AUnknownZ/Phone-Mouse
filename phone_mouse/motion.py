@@ -317,87 +317,148 @@ class LaserPointer:
 class SlidePointer:
     """Desk mouse: slide the phone flat on a surface.
 
-    A phone has no optical sensor, so position comes from integrating the
-    accelerometer twice. Velocity is integrated with no damping, so cursor
-    travel follows the distance the phone moved, including the glide after
-    the push. Braking can cancel that velocity but cannot reverse it, so the
-    cursor does not bounce back. While the phone rests, velocity is zero and
-    the sensor bias is re-estimated.
+    This is the stroke tracker from the version whose directions matched the
+    phone and which sat still at rest. Two desk-only changes sit on top of it:
 
-    Lifting is decided from the Z axis. Flat on the desk, gravity along Z
-    is about ±9.8 m/s². Tipping the phone, or a sharp upward acceleration,
-    moves that reading away from gravity and freezes the cursor. Setting it
-    back down brings Z back to gravity, which resumes tracking. Horizontal
-    acceleration and the gyro are not part of that decision: at rest they
-    are too noisy, and requiring them to be quiet left the cursor stuck
-    on "lifted".
+    * A firm slide ends once the acceleration goes quiet, so the cursor does
+      not keep the last speed, and a weak leftover acceleration cannot speed
+      it up. A very gentle slide may coast briefly, because its acceleration
+      dips into the noise and that dip is not a stop.
+    * Lifting pauses the cursor. The phone's Z acceleration is compared with
+      the constant reading it has while flat on the desk. A pickup moves
+      that reading by a few m/s². The smaller tilt used to set the phone
+      down does not. There is no pressure sensor on the back of an iPhone
+      that a web page can read.
+
+    Position is the integral of horizontal acceleration, one stroke at a time.
+    At rest the velocity is zero and the sensor bias is re-learned.
     """
 
     pixels_per_meter: float = 15000.0
-    start_accel: float = 0.2
+    start_accel: float = 0.3
     still_accel: float = 0.12
     still_gyro_dps: float = 10.0
-    still_time: float = 0.1
-    end_speed: float = 0.02
+    still_time: float = 0.12
+    end_fraction: float = 0.15
+    reverse_fraction: float = 0.5
+    min_reverse_speed: float = 0.05
+    reverse_window: float = 0.5
+    max_stroke_time: float = 2.0
     bias_rate: float = 0.03
     max_speed: float = 2.0
-    # |gravity along Z| above this means the screen is near horizontal.
-    down_gz: float = 8.4
-    # |gravity along Z| below this means the phone is clearly tipped up.
-    lift_gz: float = 6.8
-    lift_az: float = 5.0
-    lift_time: float = 0.06
-    resume_time: float = 0.1
+    # How far Z (m/s²) must move from the constant desk reading before it
+    # counts as a lift. A 30° tilt only changes Z by about 1.3; a pickup
+    # changes it by several.
+    lift_dz: float = 2.4
+    lift_time: float = 0.04
+    resume_time: float = 0.18
     moving: bool = False
     lifted: bool = False
     _v: list[float] = field(default_factory=lambda: [0.0, 0.0])
     _bias: list[float] = field(default_factory=lambda: [0.0, 0.0])
-    _dir: tuple[float, float] = (0.0, 0.0)
+    _pending: list[float] = field(default_factory=lambda: [0.0, 0.0])
     _peak: float = 0.0
+    _peak_a: float = 0.0
+    _dir: tuple[float, float] = (0.0, 0.0)
+    _last_peak: float = 0.0
+    _since_stroke: float = math.inf
     _still_t: float = 0.0
-    _down_t: float = 0.0
+    _stroke_t: float = 0.0
     _lift_t: float = 0.0
-    _brake_t: float = 0.0
-    _gz: float | None = None
+    _down_t: float = 0.0
+    _weak_t: float = 0.0
+    _rest_ready: bool = False
+    _gz_rest: float = 0.0
+    _g_rest: float = 0.0
+    _az_rest: float = 0.0
+    _seed_gz: float = 0.0
+    _seed_g: float = 0.0
+    _seed_n: int = 0
 
     @property
     def velocity(self) -> tuple[float, float]:
         return self._v[0], self._v[1]
 
-    def _stop(self, brake: bool = False) -> None:
+    def _end_stroke(self) -> None:
         self.moving = False
+        self._last_peak = self._peak
+        self._since_stroke = 0.0
         self._v = [0.0, 0.0]
+        self._pending = [0.0, 0.0]
         self._peak = 0.0
-        if brake:
-            # The deceleration that just stopped the phone is still arriving.
-            # Ignore it until it dies down; the next push starts after that.
-            self._brake_t = 1.0
-        else:
-            self._dir = (0.0, 0.0)
-            self._brake_t = 0.0
+        self._peak_a = 0.0
+        self._weak_t = 0.0
 
     def _sense_lift(self, grav: Vec3 | None, az: float, dt: float) -> None:
-        """Track whether the phone is on the desk, using the Z axis only."""
+        """Pause when Z leaves the constant desk reading by a wide margin.
+
+        On the desk, ``accelerationIncludingGravity`` along Z sits at one
+        value (about ±9.8, screen up). Tilting the phone onto the desk
+        rotates that vector and only changes Z by a fraction of g. Picking
+        the phone up adds a real acceleration, so Z, or the size of the
+        whole vector, jumps by a few m/s².
+        """
         if grav is None:
             return
-        # Smooth Z so one noisy sample cannot pin the state.
-        gz = grav[2]
-        self._gz = gz if self._gz is None else 0.6 * self._gz + 0.4 * gz
-        flat = abs(self._gz) >= self.down_gz
-        tipped = abs(self._gz) <= self.lift_gz or az >= self.lift_az
+        gx, gy, gz = grav
+        gxy = math.hypot(gx, gy)
+        mag = _norm(grav)
+        # Mostly gravity along Z: the pose of a phone lying on the desk,
+        # including the mild tilt used to set it down. About 26°.
+        flatish = abs(gz) >= 8.8 and gxy <= 4.5
+
+        if not self._rest_ready:
+            if flatish:
+                self._seed_gz += gz
+                self._seed_g += mag
+                self._seed_n += 1
+                if self._seed_n >= 8:
+                    self._gz_rest = self._seed_gz / self._seed_n
+                    self._g_rest = self._seed_g / self._seed_n
+                    self._az_rest = az
+                    self._rest_ready = True
+            else:
+                self._seed_gz = 0.0
+                self._seed_g = 0.0
+                self._seed_n = 0
+            return
+
+        sign = 1.0 if self._gz_rest >= 0 else -1.0
+        along = gz * sign
+        rest_along = abs(self._gz_rest)
+        rise = along - rest_along
+        drop = rest_along - along
+        dmag = mag - self._g_rest
+        az_rise = az - self._az_rest
+        jumped = (
+            rise >= self.lift_dz
+            or drop >= self.lift_dz
+            or dmag >= self.lift_dz
+            or az_rise >= self.lift_dz
+        )
+
         if not self.lifted:
-            if tipped and not flat:
+            # Follow a slow wander of the desk reading. A real lift is too
+            # far away for this to absorb it.
+            if flatish and abs(rise) < 0.6 and abs(drop) < 0.6 and abs(dmag) < 0.8 and az_rise < 0.6:
+                self._gz_rest += 0.03 * (gz - self._gz_rest)
+                self._g_rest += 0.03 * (mag - self._g_rest)
+                self._az_rest += 0.03 * (az - self._az_rest)
+                self._lift_t = 0.0
+                return
+            if jumped:
                 self._lift_t += dt
                 if self._lift_t >= self.lift_time:
                     self.lifted = True
                     self._down_t = 0.0
-                    self._stop()
+                    self._end_stroke()
             else:
                 self._lift_t = 0.0
             return
-        # Put down: Z is back near ±g. Do not also require the phone to be
-        # still; a hand resting on it keeps the other axes noisy.
-        if flat:
+
+        # Back at the desk constant. Setting the phone down is this return.
+        back = flatish and abs(gz - self._gz_rest) <= 1.0 and dmag <= 1.6 and az_rise < self.lift_dz
+        if back:
             self._down_t += dt
             if self._down_t >= self.resume_time:
                 self.lifted = False
@@ -422,56 +483,104 @@ class SlidePointer:
         if self.lifted:
             return 0.0, 0.0
 
-        quiet = a_mag < self.still_accel and gyro < self.still_gyro_dps
-        self._still_t = self._still_t + dt if quiet else 0.0
-        speed = math.hypot(*self._v)
-        # Quiet and no longer sliding: at rest. Quiet but still fast: gliding,
-        # so keep the velocity instead of dropping the cursor mid-move.
-        if self._still_t >= self.still_time and speed < self.end_speed:
-            if not self.moving:
+        self._since_stroke += dt
+        if a_mag < self.still_accel and gyro < self.still_gyro_dps:
+            self._still_t += dt
+        else:
+            self._still_t = 0.0
+
+        # Quiet means the phone has stopped. A brisk slide ends here so the
+        # cursor does not keep the last speed. A gentle slide (peak
+        # acceleration under 0.8 m/s²) is allowed a short coast, because its
+        # acceleration dips into the noise and that dip is not a stop.
+        speed_now = math.hypot(*self._v)
+        gentle = self._peak_a < 0.8
+        coasting = (
+            self.moving
+            and gentle
+            and self._peak > 0
+            and speed_now > 0.5 * self._peak
+            and self._still_t < 3 * self.still_time
+        )
+        if self._still_t >= self.still_time and not coasting:
+            if self.moving:
+                self._end_stroke()
+            elif self._since_stroke > self.reverse_window:
                 self._bias[0] += self.bias_rate * ax
                 self._bias[1] += self.bias_rate * ay
-            self._stop()
+            self._v = [0.0, 0.0]
+            self._pending = [0.0, 0.0]
             return 0.0, 0.0
 
-        if self._brake_t > 0.0:
-            # Hold until the braking acceleration itself dies down, so the
-            # tail of a stop can't become a move in the opposite direction.
-            opposing = a_mag >= self.still_accel and ax * self._dir[0] + ay * self._dir[1] < 0
-            if opposing:
-                return 0.0, 0.0
-            self._brake_t = 0.0
-            self._dir = (0.0, 0.0)
+        # After a real push, leftover acceleration that still points the same
+        # way is sensor bias. It must not speed the cursor up, and if it
+        # persists the stroke ends. Braking still counts, so the cursor
+        # follows the phone through the slowdown. Gentle slides never reach
+        # this (their peak acceleration stays under 0.8) and keep integrating.
+        ix, iy = ax, ay
+        if self.moving and self._peak_a > 0.8 and self._peak > 0:
+            along_a = ax * self._dir[0] + ay * self._dir[1]
+            speed = math.hypot(*self._v)
+            if along_a < 0 or speed <= 0.7 * self._peak:
+                self._weak_t = 0.0
+            elif a_mag < self.still_accel:
+                # The push is over and acceleration is gone. Stop with the
+                # phone instead of coasting at the last speed. A single quiet
+                # sample at the acceleration zero-crossing is shorter than
+                # this, so the braking half of a real slide still counts.
+                self._weak_t += dt
+                if self._weak_t >= 0.05:
+                    self._end_stroke()
+                    return 0.0, 0.0
+            elif a_mag < self.start_accel:
+                self._weak_t += dt
+                ix, iy = 0.0, 0.0
+                if self._weak_t >= 0.06:
+                    self._end_stroke()
+                    return 0.0, 0.0
+            else:
+                self._weak_t = 0.0
 
-        if not self.moving:
-            if a_mag < self.start_accel:
-                return 0.0, 0.0
-            self.moving = True
-
-        self._v[0] += ax * dt
-        self._v[1] += ay * dt
+        self._v[0] += ix * dt
+        self._v[1] += iy * dt
         vx, vy = self._v
         speed = math.hypot(vx, vy)
-        if speed == 0:
-            self._stop()
+
+        if not self.moving:
+            self._pending[0] += vx * dt
+            self._pending[1] += vy * dt
+            recent = self._since_stroke < self.reverse_window
+            backwards = recent and vx * self._dir[0] + vy * self._dir[1] < 0
+            if backwards:
+                needed = max(self.reverse_fraction * self._last_peak, self.min_reverse_speed)
+                if speed < needed:
+                    return 0.0, 0.0
+                self._pending = [0.0, 0.0]
+            elif a_mag < self.start_accel or speed == 0:
+                return 0.0, 0.0
+            self.moving = True
+            self._peak = speed
+            self._peak_a = a_mag
+            self._dir = (vx / speed, vy / speed)
+            self._stroke_t = 0.0
+            px, py = self._pending
+            self._pending = [0.0, 0.0]
+            return px * self.pixels_per_meter, -py * self.pixels_per_meter
+
+        self._stroke_t += dt
+        self._peak_a = max(self._peak_a, a_mag)
+        if speed > self._peak and speed > 0:
+            self._peak = speed
+            self._dir = (vx / speed, vy / speed)
+        along = vx * self._dir[0] + vy * self._dir[1] if speed else 0.0
+        if (
+            along <= 0
+            or speed < self.end_fraction * self._peak
+            or self._stroke_t > self.max_stroke_time
+        ):
+            self._end_stroke()
             return 0.0, 0.0
-        # Braking may shrink the velocity but cannot flip it.
-        if self._peak > 0.05 and vx * self._dir[0] + vy * self._dir[1] < 0:
-            self._stop(brake=True)
-            return 0.0, 0.0
-        self._dir = (vx / speed, vy / speed)
-        self._peak = max(self._peak, speed)
-        # Quiet and well below the speed this push reached: the phone has
-        # stopped (or only a little residual velocity is left). A real glide
-        # keeps its speed, so it is not cut off here.
-        if quiet and self._peak > 0.05 and speed < 0.3 * self._peak:
-            self._stop(brake=True)
-            return 0.0, 0.0
-        # Only a slowing phone has stopped. The first samples of a push are
-        # slow too, and dropping them is what made the cursor feel late.
-        if speed < self.end_speed and ax * vx + ay * vy <= 0:
-            self._stop(brake=True)
-            return 0.0, 0.0
+
         if speed > self.max_speed:
             k = self.max_speed / speed
             self._v = [vx * k, vy * k]
@@ -481,6 +590,10 @@ class SlidePointer:
         return vx * dt * self.pixels_per_meter, -vy * dt * self.pixels_per_meter
 
     def reset(self) -> None:
-        """Forget motion in progress."""
-        self._stop()
+        """Forget motion in progress (e.g. while the phone is lifted)."""
+        if self.moving:
+            self._end_stroke()
+        self._v = [0.0, 0.0]
+        self._pending = [0.0, 0.0]
         self._still_t = 0.0
+        self._weak_t = 0.0

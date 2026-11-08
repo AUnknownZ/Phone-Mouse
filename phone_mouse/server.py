@@ -39,7 +39,10 @@ def lan_ip() -> str:
 
 
 async def index(request: web.Request) -> web.FileResponse:
-    return web.FileResponse(STATIC_DIR / "index.html")
+    return web.FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 async def websocket(request: web.Request) -> web.WebSocketResponse:

@@ -166,6 +166,12 @@ class TestLaserPointer:
         assert laser.target() == pytest.approx((300.0, 300.0))
 
 
+def settle_on_desk(p, n=12):
+    """Flat phone: teach the constant desk Z before a lift gesture."""
+    for _ in range(n):
+        p.update((0.0, 0.0, 0.0), DT, grav=(0.0, 0.0, 9.81))
+
+
 def run_desk(strokes, **kw):
     p = SlidePointer()
     xs, x = [], 0.0
@@ -195,14 +201,28 @@ class TestSlidePointer:
         assert max(xs) - xs[-1] < 0.03 * true_px
         assert min(xs) >= -0.01 * true_px
 
-    def test_glide_keeps_moving_the_cursor(self):
+    def test_a_stop_does_not_coast_or_speed_up(self):
         p = SlidePointer()
-        for _ in range(int(0.12 / DT)):
-            p.update((2.0, 0.0, 0.0), DT)
+        for _ in range(int(0.15 / DT)):
+            p.update((2.5, 0.0, 0.0), DT)
         speed = p.velocity[0]
-        coast = sum(p.update((0.0, 0.0, 0.0), DT)[0] for _ in range(int(0.8 / DT)))
-        assert speed > 0.15
-        assert coast == pytest.approx(speed * 0.8 * p.pixels_per_meter, rel=0.05)
+        assert speed > 0.2
+        # Acceleration gone: the cursor stops with the phone, instead of
+        # keeping that speed for the rest of the window.
+        quiet = [p.update((0.0, 0.0, 0.0), DT)[0] for _ in range(int(0.6 / DT))]
+        assert sum(quiet) < 0.1 * speed * p.pixels_per_meter
+        assert sum(quiet[6:]) == 0
+        assert not p.moving
+        # A leftover bias in the same direction must not speed the cursor up
+        # and carry it away. Holding the bias for 0.6 s would be thousands
+        # of pixels if velocity kept integrating.
+        p2 = SlidePointer()
+        for _ in range(int(0.15 / DT)):
+            p2.update((2.5, 0.0, 0.0), DT)
+        leftover = [p2.update((0.2, 0.0, 0.0), DT)[0] for _ in range(int(0.6 / DT))]
+        assert sum(leftover) < 0.1 * speed * p2.pixels_per_meter
+        assert sum(leftover[6:]) == 0
+        assert not p2.moving
 
     def test_a_push_moves_the_cursor_on_the_first_sample(self):
         p = SlidePointer()
@@ -210,7 +230,8 @@ class TestSlidePointer:
 
     def test_z_gravity_lifts_and_putting_down_resumes_despite_noise(self):
         p = SlidePointer()
-        # Tipped up: gravity has left the Z axis.
+        settle_on_desk(p)
+        # Tipped up: Z has left the constant desk reading by several m/s².
         tipped = (0.0, 8.5, 4.9)
         samples = [p.update((2.0, 0.0, 0.0), DT, grav=tipped)[0] for _ in range(20)]
         assert p.lifted
@@ -226,6 +247,40 @@ class TestSlidePointer:
         assert not p.lifted
         again = sum(p.update((2.0, 0.0, 0.0), DT, grav=(0.2, 0.1, 9.8))[0] for _ in range(8))
         assert again > 0
+
+    def test_a_flat_slide_is_not_a_lift_and_an_upward_accel_is(self):
+        p = SlidePointer()
+        # A brisk slide shows up in accelerationIncludingGravity too, but Z
+        # is still gravity. That is a slide, not a lift.
+        for _ in range(30):
+            p.update((3.0, 0.0, 0.0), DT, grav=(3.0, 0.0, 9.8))
+        assert not p.lifted
+        assert p.moving
+        # Picked straight up: Z jumps several m/s² above the desk constant.
+        q = SlidePointer()
+        settle_on_desk(q)
+        for _ in range(12):
+            q.update((0.0, 0.0, 3.0), DT, grav=(0.0, 0.0, 12.8))
+        assert q.lifted
+        assert q.update((1.0, 0.0, 0.0), DT, grav=(0.0, 0.0, 12.8)) == (0.0, 0.0)
+
+    def test_laying_the_phone_flat_is_not_a_lift_but_a_z_jump_is(self):
+        p = SlidePointer()
+        settle_on_desk(p)
+        # About 25°: the tilt used to set the phone down. Z only falls by ~0.9.
+        lay_down = (0.0, 4.14, 8.89)
+        for _ in range(20):
+            p.update((0.2, 0.0, 0.0), DT, grav=lay_down)
+        assert not p.lifted
+        # A 1.3 m/s² rise is still in that same small band.
+        for _ in range(12):
+            p.update((0.0, 0.0, 1.3), DT, grav=(0.1, -0.1, 11.1))
+        assert not p.lifted
+        # A pickup: Z is several m/s² above the constant desk reading.
+        for _ in range(6):
+            p.update((0.0, 0.0, 3.2), DT, grav=(0.0, 0.0, 13.0))
+        assert p.lifted
+        assert p.update((1.5, 0.0, 0.0), DT, grav=(0.0, 0.0, 13.0)) == (0.0, 0.0)
 
     def test_push_towards_top_edge_moves_cursor_up(self):
         p = SlidePointer()

@@ -106,7 +106,10 @@ header { display: flex; align-items: center; gap: 8px; }
 /* Desk mode: buttons stay up top, and the rest of the screen is an empty
    palm rest. Nothing there accepts touches. */
 .mode-desk .surface {
-  grid-template-rows: minmax(108px, 24%) 1fr;
+  /* Tall L / wheel / R row. 38% was easy to miss next to the old strip,
+     especially in landscape; this is about half the screen and at least
+     172px, with the rest left empty for the hand. */
+  grid-template-rows: minmax(172px, 50%) 1fr;
   grid-template-areas:
     "left wheel right"
     "rest rest rest";
